@@ -56,6 +56,7 @@ print("LOCAL RANK ", local_rank)
 # num_devices = torch.cuda.device_count()
 # if num_devices==0: num_devices = 1
 # accelerator = Accelerator(split_batches=False)
+# global_batch_size = 128
                           
 ### Multi-GPU config ###
 from accelerate import Accelerator, DeepSpeedPlugin
@@ -69,7 +70,7 @@ if num_devices <= 1 and utils.is_interactive():
     os.environ["LOCAL_RANK"] = "0"
     os.environ["WORLD_SIZE"] = "1"
     os.environ["GLOBAL_BATCH_SIZE"] = "128" # set this to your batch size!
-    batch_size = os.environ["GLOBAL_BATCH_SIZE"]
+    global_batch_size = os.environ["GLOBAL_BATCH_SIZE"]
 
 # alter the deepspeed config according to your global and local batch size
 if local_rank == 0:
@@ -110,7 +111,7 @@ if utils.is_interactive():
     # Example use
     jupyter_args = f"--data_path=/fsx/proj-fmri/shared/mindeyev2_dataset \
                     --model_name=test \
-                    --subj=1 --batch_size={batch_size} --n_samples_save=0 \
+                    --subj=1 --batch_size={global_batch_size} --n_samples_save=0 \
                     --max_lr=3e-4 --mixup_pct=.66 --num_epochs=12 --ckpt_interval=999 --no-use_image_aug"
 
     jupyter_args = jupyter_args.split()
@@ -548,7 +549,7 @@ model, optimizer, train_dl, test_dl, lr_scheduler
 )
 
 
-# In[ ]:
+# In[17]:
 
 
 print(f"{model_name} starting with epoch {epoch} / {num_epochs}")
@@ -704,10 +705,4 @@ if ckpt_saving:
     save_ckpt(f'last')
 if not utils.is_interactive():
     sys.exit(0)
-
-
-# In[ ]:
-
-
-
 
