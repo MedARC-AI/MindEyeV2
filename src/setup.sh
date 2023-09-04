@@ -12,3 +12,4 @@ conda install numpy matplotlib tqdm scikit-image jupyterlab -y
 pip install accelerate webdataset clip pandas matplotlib ftfy regex kornia umap-learn h5py
 pip install torchvision==0.15.2 torch==2.0.1
 pip install diffusers
+pip install deepspeed
