@@ -137,6 +137,18 @@ def soft_clip_loss(preds, targs, temp=0.125): #, distributed=False, accelerator=
     loss = (loss1 + loss2)/2
     return loss
 
+def soft_siglip_loss(img_emb, txt_emb, temp, bias):
+    n = img_emb.size(0)
+    t = torch.exp(temp)
+    zimg = F.normalize(img_emb, dim=-1)
+    ztxt = F.normalize(txt_emb, dim=-1)
+    logits = torch.mm(zimg, ztxt.T) * t + bias
+    labels = 2 * torch.eye(n, device=zimg.device) - torch.ones(n, n, device=zimg.device)
+    loss1 = -torch.sum(F.logsigmoid(labels * logits)) / n
+    loss2 = -torch.sum(F.logsigmoid(labels * logits.T)) / n
+    loss = (loss1 + loss2) / 2
+    return loss
+
 def mixco(voxels, beta=0.15, s_thresh=0.5):
     perm = torch.randperm(voxels.shape[0])
     voxels_shuffle = voxels[perm].to(voxels.device,dtype=voxels.dtype)
@@ -192,6 +204,22 @@ def check_loss(loss):
 
 def cosine_anneal(start, end, steps):
     return end + (start - end)/2 * (1 + torch.cos(torch.pi*torch.arange(steps)/(steps-1)))
+
+def resize(img, img_size=128):
+    if img.ndim == 3: img = img[None]
+    return nn.functional.interpolate(img, size=(img_size, img_size), mode='nearest')
+
+def patchify(img, patch_size=16):
+    B, C, H, W = img.size()
+    patches = img.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)
+    patches = patches.contiguous().view(B, C, -1, patch_size, patch_size)
+    return patches.permute(0, 2, 1, 3, 4)
+
+def unpatchify(patches):
+    B, N, C, H, W = patches.shape  # B=Batch size, N=Number of patches, C=Channels, H=Height, W=Width
+    patches = patches.view(B, int(N**0.5), int(N**0.5), C, H, W)
+    patches = patches.permute(0, 3, 1, 4, 2, 5).contiguous()
+    return patches.view(B, C, H*int(N**0.5), W*int(N**0.5))
 
 import braceexpand
 def get_dataloaders(
