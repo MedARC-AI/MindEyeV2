@@ -137,16 +137,31 @@ def soft_clip_loss(preds, targs, temp=0.125): #, distributed=False, accelerator=
     loss = (loss1 + loss2)/2
     return loss
 
-def soft_siglip_loss(img_emb, txt_emb, temp, bias):
-    n = img_emb.size(0)
-    t = torch.exp(temp)
-    zimg = F.normalize(img_emb, dim=-1)
-    ztxt = F.normalize(txt_emb, dim=-1)
-    logits = torch.mm(zimg, ztxt.T) * t + bias
-    labels = 2 * torch.eye(n, device=zimg.device) - torch.ones(n, n, device=zimg.device)
-    loss1 = -torch.sum(F.logsigmoid(labels * logits)) / n
-    loss2 = -torch.sum(F.logsigmoid(labels * logits.T)) / n
-    loss = (loss1 + loss2) / 2
+def soft_siglip_loss(preds, targs, temp, bias):
+    temp = torch.exp(temp)
+    
+    logits = (preds @ targs.T) * temp + bias
+    # diagonals (aka paired samples) should be > 0 and off-diagonals < 0
+    labels = (targs @ targs.T) - 1 + (torch.eye(len(targs)).to(targs.dtype).to(targs.device))
+
+    loss1 = -torch.sum(nn.functional.logsigmoid(logits * labels)) / len(preds)
+    loss2 = -torch.sum(nn.functional.logsigmoid(logits.T * labels)) / len(preds)
+    loss = (loss1 + loss2)/2
+    return loss
+
+def mixco_hard_siglip_loss(preds, targs, temp, bias, perm, betas):
+    temp = torch.exp(temp)
+    
+    probs = torch.diag(betas)
+    probs[torch.arange(preds.shape[0]).to(preds.device), perm] = 1 - betas
+
+    logits = (preds @ targs.T) * temp + bias
+    labels = probs * 2 - 1
+    #labels = torch.eye(len(targs)).to(targs.dtype).to(targs.device) * 2 - 1
+    
+    loss1 = -torch.sum(nn.functional.logsigmoid(logits * labels)) / len(preds)
+    loss2 = -torch.sum(nn.functional.logsigmoid(logits.T * labels)) / len(preds)
+    loss = (loss1 + loss2)/2
     return loss
 
 def mixco(voxels, beta=0.15, s_thresh=0.5):
