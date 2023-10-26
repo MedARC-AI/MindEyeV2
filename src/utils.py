@@ -351,3 +351,10 @@ def add_saturation(image, alpha=2):
     gray_image = gray_image.unsqueeze(1).expand_as(image)
     saturated_image = alpha * image + (1 - alpha) * gray_image
     return torch.clamp(saturated_image, 0, 1)
+
+def find_prompt_by_image_number(image_number, data):
+    target_image_filename = f"img_t{image_number}.jpg"
+    for entry in data:
+        if 'target' in entry and entry['target'].endswith(target_image_filename):
+            return entry['prompt']
+    return -1
