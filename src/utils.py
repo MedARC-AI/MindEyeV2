@@ -12,7 +12,7 @@ import math
 import webdataset as wds
 import tempfile
 from torchvision.utils import make_grid
-from diffusers.utils import randn_tensor
+# from diffusers.utils import randn_tensor
 
 import json
 from torchmetrics.image.fid import FrechetInceptionDistance
@@ -137,11 +137,26 @@ def soft_clip_loss(preds, targs, temp=0.125): #, distributed=False, accelerator=
     loss = (loss1 + loss2)/2
     return loss
 
-def mixco(voxels, beta=0.15, s_thresh=0.5):
-    perm = torch.randperm(voxels.shape[0])
+def soft_siglip_loss(img_emb, txt_emb, temp, bias):
+    n = img_emb.size(0)
+    t = torch.exp(temp)
+    zimg = F.normalize(img_emb, dim=-1)
+    ztxt = F.normalize(txt_emb, dim=-1)
+    logits = torch.mm(zimg, ztxt.T) * t + bias
+    labels = 2 * torch.eye(n, device=zimg.device) - torch.ones(n, n, device=zimg.device)
+    loss1 = -torch.sum(F.logsigmoid(labels * logits)) / n
+    loss2 = -torch.sum(F.logsigmoid(labels * logits.T)) / n
+    loss = (loss1 + loss2) / 2
+    return loss
+
+def mixco(voxels, beta=0.15, s_thresh=0.5, perm=None, betas=None, select=None):
+    if perm is None:
+        perm = torch.randperm(voxels.shape[0])
     voxels_shuffle = voxels[perm].to(voxels.device,dtype=voxels.dtype)
-    betas = torch.distributions.Beta(beta, beta).sample([voxels.shape[0]]).to(voxels.device,dtype=voxels.dtype)
-    select = (torch.rand(voxels.shape[0]) <= s_thresh).to(voxels.device)
+    if betas is None:
+        betas = torch.distributions.Beta(beta, beta).sample([voxels.shape[0]]).to(voxels.device,dtype=voxels.dtype)
+    if select is None:
+        select = (torch.rand(voxels.shape[0]) <= s_thresh).to(voxels.device)
     betas_shape = [-1] + [1]*(len(voxels.shape)-1)
     voxels[select] = voxels[select] * betas[select].reshape(*betas_shape) + \
         voxels_shuffle[select] * (1 - betas[select]).reshape(*betas_shape)
@@ -192,6 +207,22 @@ def check_loss(loss):
 
 def cosine_anneal(start, end, steps):
     return end + (start - end)/2 * (1 + torch.cos(torch.pi*torch.arange(steps)/(steps-1)))
+
+def resize(img, img_size=128):
+    if img.ndim == 3: img = img[None]
+    return nn.functional.interpolate(img, size=(img_size, img_size), mode='nearest')
+
+def patchify(img, patch_size=16):
+    B, C, H, W = img.size()
+    patches = img.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)
+    patches = patches.contiguous().view(B, C, -1, patch_size, patch_size)
+    return patches.permute(0, 2, 1, 3, 4)
+
+def unpatchify(patches):
+    B, N, C, H, W = patches.shape  # B=Batch size, N=Number of patches, C=Channels, H=Height, W=Width
+    patches = patches.view(B, int(N**0.5), int(N**0.5), C, H, W)
+    patches = patches.permute(0, 3, 1, 4, 2, 5).contiguous()
+    return patches.view(B, C, H*int(N**0.5), W*int(N**0.5))
 
 import braceexpand
 def get_dataloaders(
@@ -272,3 +303,58 @@ def get_dataloaders(
     val_dl = torch.utils.data.DataLoader(val_data, batch_size=val_batch_size, num_workers=1, shuffle=False, drop_last=True)
 
     return train_dl, val_dl, num_train, num_val
+
+pixcorr_preprocess = transforms.Compose([
+    transforms.Resize(425, interpolation=transforms.InterpolationMode.BILINEAR),
+])
+def pixcorr(images,brains):
+    all_images_flattened = pixcorr_preprocess(images).reshape(len(images), -1)
+    all_brain_recons_flattened = pixcorr_preprocess(brains).view(len(brains), -1)
+    corrmean = torch.diag(batchwise_pearson_correlation(all_images_flattened, all_brain_recons_flattened)).mean()
+    return corrmean
+    
+pixcorr_origsize_nanmean_preprocess = transforms.Compose([
+    transforms.Resize(128, interpolation=transforms.InterpolationMode.BILINEAR),
+])
+def pixcorr_origsize_nanmean(images,brains):
+    all_images_flattened = pixcorr_origsize_nanmean_preprocess(images).reshape(len(images), -1)
+    all_brain_recons_flattened = brains.view(len(brains), -1) # assuming it's already 128 size
+    corrmean = torch.nanmean(torch.diag(batchwise_pearson_correlation(all_images_flattened, all_brain_recons_flattened)))
+    return corrmean
+
+def select_annotations(annots, random=False):
+    """
+    There are 5 annotations per image. Select one of them for each image.
+    """
+    for i, b in enumerate(annots):
+        t = ''
+        if random:
+            # select random non-empty annotation
+            while t == '':
+                rand = torch.randint(5, (1,1))[0][0]
+                t = b[rand]
+        else:
+            # select first non-empty annotation
+            for j in range(5):
+                if b[j] != '':
+                    t = b[j]
+                    break
+        if i == 0:
+            txt = np.array(t)
+        else:
+            txt = np.vstack((txt, t))
+    txt = txt.flatten()
+    return txt
+
+def add_saturation(image, alpha=2):
+    gray_image = 0.2989 * image[:, 0, :, :] + 0.5870 * image[:, 1, :, :] + 0.1140 * image[:, 2, :, :]
+    gray_image = gray_image.unsqueeze(1).expand_as(image)
+    saturated_image = alpha * image + (1 - alpha) * gray_image
+    return torch.clamp(saturated_image, 0, 1)
+
+def find_prompt_by_image_number(image_number, data):
+    target_image_filename = f"img_t{image_number}.jpg"
+    for entry in data:
+        if 'target' in entry and entry['target'].endswith(target_image_filename):
+            return entry['prompt']
+    return -1
