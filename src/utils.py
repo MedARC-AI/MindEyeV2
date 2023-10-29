@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import PIL
+import re
 import random
 import os
 import matplotlib.pyplot as plt
@@ -322,30 +323,6 @@ def pixcorr_origsize_nanmean(images,brains):
     corrmean = torch.nanmean(torch.diag(batchwise_pearson_correlation(all_images_flattened, all_brain_recons_flattened)))
     return corrmean
 
-def select_annotations(annots, random=False):
-    """
-    There are 5 annotations per image. Select one of them for each image.
-    """
-    for i, b in enumerate(annots):
-        t = ''
-        if random:
-            # select random non-empty annotation
-            while t == '':
-                rand = torch.randint(5, (1,1))[0][0]
-                t = b[rand]
-        else:
-            # select first non-empty annotation
-            for j in range(5):
-                if b[j] != '':
-                    t = b[j]
-                    break
-        if i == 0:
-            txt = np.array(t)
-        else:
-            txt = np.vstack((txt, t))
-    txt = txt.flatten()
-    return txt
-
 def add_saturation(image, alpha=2):
     gray_image = 0.2989 * image[:, 0, :, :] + 0.5870 * image[:, 1, :, :] + 0.1140 * image[:, 2, :, :]
     gray_image = gray_image.unsqueeze(1).expand_as(image)
@@ -358,3 +335,45 @@ def find_prompt_by_image_number(image_number, data):
         if 'target' in entry and entry['target'].endswith(target_image_filename):
             return entry['prompt']
     return -1
+
+def numerical_sort(file):
+    # Extract the number from the filename
+    number = int(re.search(r'img_t(\d+)', file).group(1))
+    return number
+
+def load_and_process_images(directory_path):
+    # Check if the directory exists
+    if not os.path.exists(directory_path):
+        raise Exception(f"The directory does not exist: {directory_path}")
+
+    # Get list of all files in the directory
+    file_list = os.listdir(directory_path)
+
+    # Filter out non-image files
+    image_files = [file for file in file_list if file.lower().endswith('.jpg')]
+    sorted_image_files = sorted(image_files, key=numerical_sort)
+    # Define a transformation pipeline
+    preprocess = transforms.Compose([
+        transforms.Resize((224, 224)),  # Resizing the image
+        transforms.ToTensor(),  # Converting to tensor
+    ])
+
+    # List to hold the tensors
+    tensor_list = []
+
+    # Process each image
+    for i in range(50000):
+    # for i in range(len(sorted_image_files)):
+        # Load the image
+        with Image.open(os.path.join(directory_path, sorted_image_files[i])).convert("RGB") as img:  # Ensure RGB format
+            # Apply the transformations and add to list
+            tensor = preprocess(img)
+            tensor_list.append(tensor)
+
+    # Stack the individual tensors into a single tensor
+    stacked_tensor = torch.stack(tensor_list)
+
+    # Check the shape of the tensor
+    print(f"Stacked Tensor Shape: {stacked_tensor.shape}")
+
+    return stacked_tensor
