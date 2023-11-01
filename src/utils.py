@@ -250,8 +250,8 @@ def get_dataloaders(
     def my_split_by_node(urls):
         return urls
     
-    train_url = list(braceexpand.braceexpand(train_url))
-    val_url = list(braceexpand.braceexpand(val_url))
+    train_url = train_url
+    val_url = val_url
 
     if num_devices is None:
         num_devices = torch.cuda.device_count()
@@ -377,3 +377,39 @@ def load_and_process_images(directory_path):
     print(f"Stacked Tensor Shape: {stacked_tensor.shape}")
 
     return stacked_tensor
+
+def voxel_select(voxels):
+    if voxels.ndim == 2:
+        return voxels
+    choice = torch.rand(1)
+    # random combine
+    if choice <= 0.5:
+        weights = torch.rand(voxels.shape[0], voxels.shape[1])[:,:,None].to(voxels.device)
+        return (weights * voxels).sum(1)/weights.sum(1)
+    # mean
+    if choice <= 0.8:
+        return voxels.mean(1)
+    # random select
+    randints = torch.randint(0, voxels.shape[1], (voxels.shape[0],))
+    return voxels[torch.arange(voxels.shape[0]), randints]
+
+def soft_cont_loss(student_preds, teacher_preds, teacher_aug_preds, temp=0.125, distributed=True):
+    if not distributed:
+        teacher_teacher_aug = (teacher_preds @ teacher_aug_preds.T)/temp
+        teacher_teacher_aug_t = (teacher_aug_preds @ teacher_preds.T)/temp
+        student_teacher_aug = (student_preds @ teacher_aug_preds.T)/temp
+        student_teacher_aug_t = (teacher_aug_preds @ student_preds.T)/temp
+    else:
+        all_student_preds, all_teacher_preds = gather_features(student_preds, teacher_preds)
+        all_teacher_aug_preds = gather_features(teacher_aug_preds, None)
+
+        teacher_teacher_aug = (teacher_preds @ all_teacher_aug_preds.T)/temp
+        teacher_teacher_aug_t = (teacher_aug_preds @ all_teacher_preds.T)/temp
+        student_teacher_aug = (student_preds @ all_teacher_aug_preds.T)/temp
+        student_teacher_aug_t = (teacher_aug_preds @ all_student_preds.T)/temp
+    
+    loss1 = -(student_teacher_aug.log_softmax(-1) * teacher_teacher_aug.softmax(-1)).sum(-1).mean()
+    loss2 = -(student_teacher_aug_t.log_softmax(-1) * teacher_teacher_aug_t.softmax(-1)).sum(-1).mean()
+    
+    loss = (loss1 + loss2)/2
+    return loss
