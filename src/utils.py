@@ -94,11 +94,20 @@ def batchwise_pearson_correlation(Z, B):
     return pearson_correlation
 
 def batchwise_cosine_similarity(Z,B):
-    # https://www.h4pz.co/blog/2021/4/2/batch-cosine-similarity-in-pytorch-or-numpy-jax-cupy-etc
     B = B.T
     Z_norm = torch.linalg.norm(Z, dim=1, keepdim=True)  # Size (n, 1).
     B_norm = torch.linalg.norm(B, dim=0, keepdim=True)  # Size (1, b).
     cosine_similarity = ((Z @ B) / (Z_norm @ B_norm)).T
+    return cosine_similarity
+
+def cosine_similarity(Z,B,l=0):
+    Z = nn.functional.normalize(Z, p=2, dim=1)
+    B = nn.functional.normalize(B, p=2, dim=1)
+    # if l>0, use distribution normalization
+    # https://twitter.com/YifeiZhou02/status/1716513495087472880
+    Z = Z - l * torch.mean(Z,dim=0)
+    B = B - l * torch.mean(B,dim=0)
+    cosine_similarity = (Z @ B.T).T
     return cosine_similarity
 
 def topk(similarities,labels,k=5):
@@ -137,16 +146,31 @@ def soft_clip_loss(preds, targs, temp=0.125): #, distributed=False, accelerator=
     loss = (loss1 + loss2)/2
     return loss
 
-def soft_siglip_loss(img_emb, txt_emb, temp, bias):
-    n = img_emb.size(0)
-    t = torch.exp(temp)
-    zimg = F.normalize(img_emb, dim=-1)
-    ztxt = F.normalize(txt_emb, dim=-1)
-    logits = torch.mm(zimg, ztxt.T) * t + bias
-    labels = 2 * torch.eye(n, device=zimg.device) - torch.ones(n, n, device=zimg.device)
-    loss1 = -torch.sum(F.logsigmoid(labels * logits)) / n
-    loss2 = -torch.sum(F.logsigmoid(labels * logits.T)) / n
-    loss = (loss1 + loss2) / 2
+def soft_siglip_loss(preds, targs, temp, bias):
+    temp = torch.exp(temp)
+    
+    logits = (preds @ targs.T) * temp + bias
+    # diagonals (aka paired samples) should be >0 and off-diagonals <0
+    labels = (targs @ targs.T) - 1 + (torch.eye(len(targs)).to(targs.dtype).to(targs.device))
+
+    loss1 = -torch.sum(nn.functional.logsigmoid(logits * labels[:len(preds)])) / len(preds)
+    loss2 = -torch.sum(nn.functional.logsigmoid(logits.T * labels[:,:len(preds)])) / len(preds)
+    loss = (loss1 + loss2)/2
+    return loss
+
+def mixco_hard_siglip_loss(preds, targs, temp, bias, perm, betas):
+    temp = torch.exp(temp)
+    
+    probs = torch.diag(betas)
+    probs[torch.arange(preds.shape[0]).to(preds.device), perm] = 1 - betas
+
+    logits = (preds @ targs.T) * temp + bias
+    labels = probs * 2 - 1
+    #labels = torch.eye(len(targs)).to(targs.dtype).to(targs.device) * 2 - 1
+    
+    loss1 = -torch.sum(nn.functional.logsigmoid(logits * labels)) / len(preds)
+    loss2 = -torch.sum(nn.functional.logsigmoid(logits.T * labels)) / len(preds)
+    loss = (loss1 + loss2)/2
     return loss
 
 def mixco(voxels, beta=0.15, s_thresh=0.5, perm=None, betas=None, select=None):
@@ -193,6 +217,7 @@ def count_params(model):
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('param counts:\n{:,} total\n{:,} trainable'.format(total, trainable))
+    return trainable
 
 def image_grid(imgs, rows, cols):
     w, h = imgs[0].size
@@ -307,19 +332,13 @@ def get_dataloaders(
 pixcorr_preprocess = transforms.Compose([
     transforms.Resize(425, interpolation=transforms.InterpolationMode.BILINEAR),
 ])
-def pixcorr(images,brains):
+def pixcorr(images,brains,nan=True):
     all_images_flattened = pixcorr_preprocess(images).reshape(len(images), -1)
     all_brain_recons_flattened = pixcorr_preprocess(brains).view(len(brains), -1)
-    corrmean = torch.diag(batchwise_pearson_correlation(all_images_flattened, all_brain_recons_flattened)).mean()
-    return corrmean
-    
-pixcorr_origsize_nanmean_preprocess = transforms.Compose([
-    transforms.Resize(128, interpolation=transforms.InterpolationMode.BILINEAR),
-])
-def pixcorr_origsize_nanmean(images,brains):
-    all_images_flattened = pixcorr_origsize_nanmean_preprocess(images).reshape(len(images), -1)
-    all_brain_recons_flattened = brains.view(len(brains), -1) # assuming it's already 128 size
-    corrmean = torch.nanmean(torch.diag(batchwise_pearson_correlation(all_images_flattened, all_brain_recons_flattened)))
+    if nan:
+        corrmean = torch.nanmean(torch.diag(batchwise_pearson_correlation(all_images_flattened, all_brain_recons_flattened)))
+    else:
+        corrmean = torch.mean(torch.diag(batchwise_pearson_correlation(all_images_flattened, all_brain_recons_flattened)))
     return corrmean
 
 def select_annotations(annots, random=False):
@@ -358,3 +377,22 @@ def find_prompt_by_image_number(image_number, data):
         if 'target' in entry and entry['target'].endswith(target_image_filename):
             return entry['prompt']
     return -1
+
+def compute_negative_l1_losses(preds, targets):
+    batch_size = preds.size(0)
+    
+    # Expand dimensions for broadcasting
+    expanded_preds = preds.unsqueeze(1)        # Shape: [batch_size, 1, 100]
+    expanded_targets = targets.unsqueeze(0)    # Shape: [1, batch_size, 100]
+    
+    # Compute pairwise L1 differences
+    l1_diffs = torch.abs(expanded_preds - expanded_targets)  # Shape: [batch_size, batch_size, 100]
+    
+    # Mask the diagonal to exclude positive pairs
+    mask = torch.eye(batch_size).bool().to(l1_diffs.device)
+    l1_diffs[mask] = 0
+    
+    # Sum L1 differences for each sample against all negatives
+    negative_losses = l1_diffs.sum(dim=-1).mean()
+    
+    return negative_losses
