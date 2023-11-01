@@ -377,26 +377,3 @@ def find_prompt_by_image_number(image_number, data):
         if 'target' in entry and entry['target'].endswith(target_image_filename):
             return entry['prompt']
     return -1
-
-def compute_negative_l1_losses(preds, targets):
-    batch_size = preds.size(0)
-    
-    # Expand dimensions for broadcasting
-    expanded_preds = preds.unsqueeze(1)        # Shape: [batch_size, 1, 100]
-    expanded_targets = targets.unsqueeze(0)    # Shape: [1, batch_size, 100]
-    
-    # Compute pairwise L1 differences
-    l1_diffs = torch.abs(expanded_preds - expanded_targets)  # Shape: [batch_size, batch_size, 100]
-    
-    # Mask the diagonal to exclude positive pairs
-    mask = torch.eye(batch_size).bool().to(l1_diffs.device)
-    l1_diffs[mask] = 0
-    
-    # Sum L1 differences for each sample against all negatives
-    negative_losses = l1_diffs.sum(dim=-1).mean()
-    
-<<<<<<< HEAD
-    return negative_losses
-=======
-    return negative_losses
->>>>>>> 8051bb227e882af7a8064dcce6f70192866fbb6e
