@@ -395,4 +395,8 @@ def compute_negative_l1_losses(preds, targets):
     # Sum L1 differences for each sample against all negatives
     negative_losses = l1_diffs.sum(dim=-1).mean()
     
+<<<<<<< HEAD
     return negative_losses
+=======
+    return negative_losses
+>>>>>>> 8051bb227e882af7a8064dcce6f70192866fbb6e
