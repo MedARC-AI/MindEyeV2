@@ -12,7 +12,6 @@ import math
 import webdataset as wds
 import tempfile
 from torchvision.utils import make_grid
-# from diffusers.utils import randn_tensor
 
 import json
 from torchmetrics.image.fid import FrechetInceptionDistance
