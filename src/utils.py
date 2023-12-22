@@ -236,18 +236,6 @@ def resize(img, img_size=128):
     if img.ndim == 3: img = img[None]
     return nn.functional.interpolate(img, size=(img_size, img_size), mode='nearest')
 
-def patchify(img, patch_size=16):
-    B, C, H, W = img.size()
-    patches = img.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)
-    patches = patches.contiguous().view(B, C, -1, patch_size, patch_size)
-    return patches.permute(0, 2, 1, 3, 4)
-
-def unpatchify(patches):
-    B, N, C, H, W = patches.shape  # B=Batch size, N=Number of patches, C=Channels, H=Height, W=Width
-    patches = patches.view(B, int(N**0.5), int(N**0.5), C, H, W)
-    patches = patches.permute(0, 3, 1, 4, 2, 5).contiguous()
-    return patches.view(B, C, H*int(N**0.5), W*int(N**0.5))
-
 import braceexpand
 def get_dataloaders(
     batch_size,
@@ -376,3 +364,43 @@ def find_prompt_by_image_number(image_number, data):
         if 'target' in entry and entry['target'].endswith(target_image_filename):
             return entry['prompt']
     return -1
+
+
+from generative_models.sgm.util import append_dims
+def unclip_recon(x, diffusion_engine, vector_suffix, 
+                 num_samples=1, offset_noise_level=0.04):
+    assert x.ndim==3
+    if x.shape[0]==1:
+        x = x[[0]]
+    with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.float16), diffusion_engine.ema_scope():
+        z = torch.randn(num_samples,4,96,96).to(device) # starting noise, can change to VAE outputs of initial image for img2img
+
+        c = {"crossattn": x, "vector": vector_suffix}
+
+        tokens = torch.randn_like(x)
+        uc = {"crossattn": tokens, "vector": vector_suffix}
+
+        for k in c:
+            c[k], uc[k] = map(lambda y: y[k][:num_samples].to(device), (c, uc))
+
+        noise = torch.randn_like(z)
+        sigmas = diffusion_engine.sampler.discretization(diffusion_engine.sampler.num_steps)
+        sigma = sigmas[0].to(z.device)
+
+        if offset_noise_level > 0.0:
+            noise = noise + offset_noise_level * append_dims(
+                torch.randn(z.shape[0], device=z.device), z.ndim
+            )
+        noised_z = z + noise * append_dims(sigma, z.ndim)
+        noised_z = noised_z / torch.sqrt(
+            1.0 + sigmas[0] ** 2.0
+        )  # Note: hardcoded to DDPM-like scaling. need to generalize later.
+
+        def denoiser(x, sigma, c):
+            return diffusion_engine.denoiser(diffusion_engine.model, x, sigma, c)
+
+        samples_z = diffusion_engine.sampler(denoiser, noised_z, cond=c, uc=uc)
+        samples_x = diffusion_engine.decode_first_stage(samples_z)
+        samples = torch.clamp((samples_x*.8+.2), min=0.0, max=1.0)
+        # samples = torch.clamp((samples_x + .5) / 2.0, min=0.0, max=1.0)
+        return samples
