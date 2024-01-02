@@ -92,7 +92,7 @@ print("model_name:", model_name)
     
     # global_batch_size and batch_size should already be defined in the above cells
     # other variables can be specified in the following string:
-jupyter_args = f"--data_path=/fsx/proj-fmri/shared/mindeyev2_dataset \
+jupyter_args = f"--data_path=/weka/proj-fmri/shared/mindeyev2_dataset \
                     --model_name={model_name} --use_prior --prior_scale=30 --clip_scale=1 \
                     --subj=1 --batch_size={batch_size} --no-blurry_recon --hidden_dim=1024 --num_sessions=3 --seq_len=1 \
                     --max_lr=3e-4 --mixup_pct=.66 --num_epochs=12 --no-use_image_aug --ckpt_interval=5 --no-ckpt_saving"
@@ -107,7 +107,7 @@ parser.add_argument(
     help="name of model, used for ckpt saving and wandb logging (if enabled)",
 )
 parser.add_argument(
-    "--data_path", type=str, default="/fsx/proj-fmri/shared/natural-scenes-dataset",
+    "--data_path", type=str, default="/weka/proj-fmri/shared/natural-scenes-dataset",
     help="Path to where NSD data is stored / where to download it to",
 )
 parser.add_argument(
@@ -335,7 +335,7 @@ class imgViTBG(Dataset):
         return file_path
 
 # Usage
-directory = '/fsx/proj-fmri/shared/vitBG_embeds/'  # Replace with your directory path
+directory = '/weka/proj-fmri/shared/vitBG_embeds/'  # Replace with your directory path
 imgemb_dataset = imgViTBG(directory)
 
 def get_img_tensor(data, index_arr, batch_size):
@@ -619,7 +619,7 @@ if use_prior:
     diffusion_engine.eval().requires_grad_(False)
     diffusion_engine.to(device)
 
-    ckpt_path = '/fsx/proj-fmri/shared/mindeyev2_dataset/unclip6_epoch0_step110000.ckpt'
+    ckpt_path = '/weka/proj-fmri/shared/cache/sdxl_unclip/unclip6_epoch0_step110000.ckpt'
     ckpt = torch.load(ckpt_path, map_location='cpu')
     diffusion_engine.load_state_dict(ckpt['state_dict'])
     
@@ -1155,7 +1155,7 @@ print("\n===Finished!===\n")
 accelerator.wait_for_everyone()
 if accelerator.is_main_process:
     model = accelerator.unwrap_model(model)
-    torch.save(model.state_dict(), "/fsx/proj-fmri/shared/models/diffPriUnCLIP/diff_contrastive_unc.pth")
+    torch.save(model.state_dict(), "/weka/proj-fmri/shared/models/diffPriUnCLIP/diff_contrastive_unc.pth")
 
 
 # In[23]:
