@@ -93,11 +93,15 @@ def batchwise_pearson_correlation(Z, B):
     return pearson_correlation
 
 def batchwise_cosine_similarity(Z,B):
-    B = B.T
+    Z = Z.flatten(1)
+    B = B.flatten(1).T
     Z_norm = torch.linalg.norm(Z, dim=1, keepdim=True)  # Size (n, 1).
     B_norm = torch.linalg.norm(B, dim=0, keepdim=True)  # Size (1, b).
     cosine_similarity = ((Z @ B) / (Z_norm @ B_norm)).T
     return cosine_similarity
+
+def prenormed_batchwise_cosine_similarity(Z,B):
+    return (Z @ B.T).T
 
 def cosine_similarity(Z,B,l=0):
     Z = nn.functional.normalize(Z, p=2, dim=1)
@@ -328,7 +332,7 @@ def pixcorr(images,brains,nan=True):
         corrmean = torch.mean(torch.diag(batchwise_pearson_correlation(all_images_flattened, all_brain_recons_flattened)))
     return corrmean
 
-def select_annotations(annots, random=False):
+def select_annotations(annots, random=True):
     """
     There are 5 annotations per image. Select one of them for each image.
     """
@@ -365,9 +369,28 @@ def find_prompt_by_image_number(image_number, data):
             return entry['prompt']
     return -1
 
+def compute_negative_l1_losses(preds, targets):
+    batch_size = preds.size(0)
+    
+    # Expand dimensions for broadcasting
+    expanded_preds = preds.unsqueeze(1)        # Shape: [batch_size, 1, 100]
+    expanded_targets = targets.unsqueeze(0)    # Shape: [1, batch_size, 100]
+    
+    # Compute pairwise L1 differences
+    l1_diffs = torch.abs(expanded_preds - expanded_targets)  # Shape: [batch_size, batch_size, 100]
+    
+    # Mask the diagonal to exclude positive pairs
+    mask = torch.eye(batch_size).bool().to(l1_diffs.device)
+    l1_diffs[mask] = 0
+    
+    # Sum L1 differences for each sample against all negatives
+    negative_losses = l1_diffs.sum(dim=-1).mean()
+    
+    return negative_losses
+
 
 from generative_models.sgm.util import append_dims
-def unclip_recon(x, diffusion_engine, vector_suffix, 
+def unclip_recon(x, diffusion_engine, vector_suffix, l2normed_unclip=False,
                  num_samples=1, offset_noise_level=0.04):
     assert x.ndim==3
     if x.shape[0]==1:
@@ -375,10 +398,26 @@ def unclip_recon(x, diffusion_engine, vector_suffix,
     with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.float16), diffusion_engine.ema_scope():
         z = torch.randn(num_samples,4,96,96).to(device) # starting noise, can change to VAE outputs of initial image for img2img
 
-        c = {"crossattn": x, "vector": vector_suffix}
+        # clip_img_tokenized = clip_img_embedder(image) 
+        # tokens = clip_img_tokenized
+        token_shape = x.shape
+        tokens = x
+        if l2normed_unclip:
+            tokens = x.flatten(1) #clip_target_norm[:1] #tokens.flatten(1)
+            tokens = torch.nn.functional.normalize(tokens, dim=-1)
+            tokens = (tokens - .0002) / .0015
+            tokens = tokens.view(token_shape)
+            tokens = (tokens * 1.0957) + .1598
+        c = {"crossattn": tokens.repeat(num_samples,1,1), "vector": vector_suffix.repeat(num_samples,1)}
 
         tokens = torch.randn_like(x)
-        uc = {"crossattn": tokens, "vector": vector_suffix}
+        if l2normed_unclip:
+            tokens = tokens.flatten(1) #clip_target_norm[:1] #tokens.flatten(1)
+            tokens = torch.nn.functional.normalize(tokens, dim=-1)
+            tokens = (tokens - .0002) / .0015
+            tokens = tokens.view(token_shape)
+            tokens = (tokens * 1.0957) + .1598
+        uc = {"crossattn": tokens.repeat(num_samples,1,1), "vector": vector_suffix.repeat(num_samples,1)}
 
         for k in c:
             c[k], uc[k] = map(lambda y: y[k][:num_samples].to(device), (c, uc))
@@ -404,3 +443,24 @@ def unclip_recon(x, diffusion_engine, vector_suffix,
         samples = torch.clamp((samples_x*.8+.2), min=0.0, max=1.0)
         # samples = torch.clamp((samples_x + .5) / 2.0, min=0.0, max=1.0)
         return samples
+    
+def prep_for_unclip(x):
+    shape = x.shape
+    x = x.flatten(1)
+    x = nn.functional.normalize(x, dim=-1)
+    x = x.view(shape)
+    return x
+
+def prep_for_prior(x):
+    shape = x.shape
+    x = x.flatten(1)
+    normed = torch.nn.functional.normalize(x, dim=-1)
+    x = (normed - .0002) / .0015
+    x = x.view(shape)
+    x = (x * 1.0957) + .1598
+    return x
+
+def unprep_for_prior(x):
+    x = (x - .1598) / 1.0957
+    x = (x * .0015) + .0002
+    return x
