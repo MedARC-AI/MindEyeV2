@@ -93,11 +93,15 @@ def batchwise_pearson_correlation(Z, B):
     return pearson_correlation
 
 def batchwise_cosine_similarity(Z,B):
-    B = B.T
+    Z = Z.flatten(1)
+    B = B.flatten(1).T
     Z_norm = torch.linalg.norm(Z, dim=1, keepdim=True)  # Size (n, 1).
     B_norm = torch.linalg.norm(B, dim=0, keepdim=True)  # Size (1, b).
     cosine_similarity = ((Z @ B) / (Z_norm @ B_norm)).T
     return cosine_similarity
+
+def prenormed_batchwise_cosine_similarity(Z,B):
+    return (Z @ B.T).T
 
 def cosine_similarity(Z,B,l=0):
     Z = nn.functional.normalize(Z, p=2, dim=1)
@@ -236,18 +240,6 @@ def resize(img, img_size=128):
     if img.ndim == 3: img = img[None]
     return nn.functional.interpolate(img, size=(img_size, img_size), mode='nearest')
 
-def patchify(img, patch_size=16):
-    B, C, H, W = img.size()
-    patches = img.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)
-    patches = patches.contiguous().view(B, C, -1, patch_size, patch_size)
-    return patches.permute(0, 2, 1, 3, 4)
-
-def unpatchify(patches):
-    B, N, C, H, W = patches.shape  # B=Batch size, N=Number of patches, C=Channels, H=Height, W=Width
-    patches = patches.view(B, int(N**0.5), int(N**0.5), C, H, W)
-    patches = patches.permute(0, 3, 1, 4, 2, 5).contiguous()
-    return patches.view(B, C, H*int(N**0.5), W*int(N**0.5))
-
 import braceexpand
 def get_dataloaders(
     batch_size,
@@ -340,7 +332,7 @@ def pixcorr(images,brains,nan=True):
         corrmean = torch.mean(torch.diag(batchwise_pearson_correlation(all_images_flattened, all_brain_recons_flattened)))
     return corrmean
 
-def select_annotations(annots, random=False):
+def select_annotations(annots, random=True):
     """
     There are 5 annotations per image. Select one of them for each image.
     """
@@ -376,3 +368,66 @@ def find_prompt_by_image_number(image_number, data):
         if 'target' in entry and entry['target'].endswith(target_image_filename):
             return entry['prompt']
     return -1
+
+def compute_negative_l1_losses(preds, targets):
+    batch_size = preds.size(0)
+    
+    # Expand dimensions for broadcasting
+    expanded_preds = preds.unsqueeze(1)        # Shape: [batch_size, 1, 100]
+    expanded_targets = targets.unsqueeze(0)    # Shape: [1, batch_size, 100]
+    
+    # Compute pairwise L1 differences
+    l1_diffs = torch.abs(expanded_preds - expanded_targets)  # Shape: [batch_size, batch_size, 100]
+    
+    # Mask the diagonal to exclude positive pairs
+    mask = torch.eye(batch_size).bool().to(l1_diffs.device)
+    l1_diffs[mask] = 0
+    
+    # Sum L1 differences for each sample against all negatives
+    negative_losses = l1_diffs.sum(dim=-1).mean()
+    
+    return negative_losses
+
+
+from generative_models.sgm.util import append_dims
+def unclip_recon(x, diffusion_engine, vector_suffix,
+                 num_samples=1, offset_noise_level=0.04):
+    assert x.ndim==3
+    if x.shape[0]==1:
+        x = x[[0]]
+    with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.float16), diffusion_engine.ema_scope():
+        z = torch.randn(num_samples,4,96,96).to(device) # starting noise, can change to VAE outputs of initial image for img2img
+
+        # clip_img_tokenized = clip_img_embedder(image) 
+        # tokens = clip_img_tokenized
+        token_shape = x.shape
+        tokens = x
+        c = {"crossattn": tokens.repeat(num_samples,1,1), "vector": vector_suffix.repeat(num_samples,1)}
+
+        tokens = torch.randn_like(x)
+        uc = {"crossattn": tokens.repeat(num_samples,1,1), "vector": vector_suffix.repeat(num_samples,1)}
+
+        for k in c:
+            c[k], uc[k] = map(lambda y: y[k][:num_samples].to(device), (c, uc))
+
+        noise = torch.randn_like(z)
+        sigmas = diffusion_engine.sampler.discretization(diffusion_engine.sampler.num_steps)
+        sigma = sigmas[0].to(z.device)
+
+        if offset_noise_level > 0.0:
+            noise = noise + offset_noise_level * append_dims(
+                torch.randn(z.shape[0], device=z.device), z.ndim
+            )
+        noised_z = z + noise * append_dims(sigma, z.ndim)
+        noised_z = noised_z / torch.sqrt(
+            1.0 + sigmas[0] ** 2.0
+        )  # Note: hardcoded to DDPM-like scaling. need to generalize later.
+
+        def denoiser(x, sigma, c):
+            return diffusion_engine.denoiser(diffusion_engine.model, x, sigma, c)
+
+        samples_z = diffusion_engine.sampler(denoiser, noised_z, cond=c, uc=uc)
+        samples_x = diffusion_engine.decode_first_stage(samples_z)
+        samples = torch.clamp((samples_x*.8+.2), min=0.0, max=1.0)
+        # samples = torch.clamp((samples_x + .5) / 2.0, min=0.0, max=1.0)
+        return samples
