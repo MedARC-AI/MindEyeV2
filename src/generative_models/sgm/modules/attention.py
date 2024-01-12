@@ -640,6 +640,7 @@ class SpatialTransformer(nn.Module):
         use_checkpoint=True,
         # sdp_backend=SDPBackend.FLASH_ATTENTION
         sdp_backend=None,
+        is_adapter: Optional[bool]=False,
     ):
         super().__init__()
         logpy.debug(
@@ -699,7 +700,7 @@ class SpatialTransformer(nn.Module):
             self.proj_out = zero_module(nn.Linear(inner_dim, in_channels))
         self.use_linear = use_linear
 
-    def forward(self, x, context=None):
+    def forward(self, x, context=None, adapConn: Optional[torch.Tensor]=None):
         # note: if no context is given, cross-attention defaults to self-attention
         if not isinstance(context, list):
             context = [context]

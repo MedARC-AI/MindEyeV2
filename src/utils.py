@@ -390,7 +390,7 @@ def compute_negative_l1_losses(preds, targets):
 
 
 from generative_models.sgm.util import append_dims
-def unclip_recon(x, diffusion_engine, vector_suffix, l2normed_unclip=False,
+def unclip_recon(x, diffusion_engine, vector_suffix, adapter_vectors,
                  num_samples=1, offset_noise_level=0.04):
     assert x.ndim==3
     if x.shape[0]==1:
@@ -402,21 +402,9 @@ def unclip_recon(x, diffusion_engine, vector_suffix, l2normed_unclip=False,
         # tokens = clip_img_tokenized
         token_shape = x.shape
         tokens = x
-        if l2normed_unclip:
-            tokens = x.flatten(1) #clip_target_norm[:1] #tokens.flatten(1)
-            tokens = torch.nn.functional.normalize(tokens, dim=-1)
-            tokens = (tokens - .0002) / .0015
-            tokens = tokens.view(token_shape)
-            tokens = (tokens * 1.0957) + .1598
         c = {"crossattn": tokens.repeat(num_samples,1,1), "vector": vector_suffix.repeat(num_samples,1)}
 
         tokens = torch.randn_like(x)
-        if l2normed_unclip:
-            tokens = tokens.flatten(1) #clip_target_norm[:1] #tokens.flatten(1)
-            tokens = torch.nn.functional.normalize(tokens, dim=-1)
-            tokens = (tokens - .0002) / .0015
-            tokens = tokens.view(token_shape)
-            tokens = (tokens * 1.0957) + .1598
         uc = {"crossattn": tokens.repeat(num_samples,1,1), "vector": vector_suffix.repeat(num_samples,1)}
 
         for k in c:
@@ -436,31 +424,10 @@ def unclip_recon(x, diffusion_engine, vector_suffix, l2normed_unclip=False,
         )  # Note: hardcoded to DDPM-like scaling. need to generalize later.
 
         def denoiser(x, sigma, c):
-            return diffusion_engine.denoiser(diffusion_engine.model, x, sigma, c)
+            return diffusion_engine.denoiser(diffusion_engine.model, x, sigma, c, adapter_vectors)
 
         samples_z = diffusion_engine.sampler(denoiser, noised_z, cond=c, uc=uc)
         samples_x = diffusion_engine.decode_first_stage(samples_z)
         samples = torch.clamp((samples_x*.8+.2), min=0.0, max=1.0)
         # samples = torch.clamp((samples_x + .5) / 2.0, min=0.0, max=1.0)
         return samples
-    
-def prep_for_unclip(x):
-    shape = x.shape
-    x = x.flatten(1)
-    x = nn.functional.normalize(x, dim=-1)
-    x = x.view(shape)
-    return x
-
-def prep_for_prior(x):
-    shape = x.shape
-    x = x.flatten(1)
-    normed = torch.nn.functional.normalize(x, dim=-1)
-    x = (normed - .0002) / .0015
-    x = x.view(shape)
-    x = (x * 1.0957) + .1598
-    return x
-
-def unprep_for_prior(x):
-    x = (x - .1598) / 1.0957
-    x = (x * .0015) + .0002
-    return x

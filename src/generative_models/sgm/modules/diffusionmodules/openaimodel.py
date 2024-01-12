@@ -74,6 +74,7 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
         x: th.Tensor,
         emb: th.Tensor,
         context: Optional[th.Tensor] = None,
+        adapConn: Optional[th.Tensor] = None,
         image_only_indicator: Optional[th.Tensor] = None,
         time_context: Optional[int] = None,
         num_video_frames: Optional[int] = None,
@@ -86,7 +87,10 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
             if isinstance(module, TimestepBlock) and not isinstance(
                 module, VideoResBlock
             ):
-                x = layer(x, emb)
+                if adapConn is not None:
+                    x = layer(x, emb, adapConn)
+                else:
+                    x = layer(x, emb)
             elif isinstance(module, VideoResBlock):
                 x = layer(x, emb, num_video_frames, image_only_indicator)
             elif isinstance(module, SpatialVideoTransformer):
@@ -98,9 +102,15 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
                     image_only_indicator,
                 )
             elif isinstance(module, SpatialTransformer):
-                x = layer(x, context)
+                if adapConn is not None:
+                    x = layer(x, context, adapConn)
+                else:
+                    x = layer(x, context)
             else:
-                x = layer(x)
+                if adapConn is not None:
+                    x = layer(x, adapConn)
+                else:
+                    x = layer(x)
         return x
 
 
@@ -174,12 +184,14 @@ class Downsample(nn.Module):
         out_channels: Optional[int] = None,
         padding: int = 1,
         third_down: bool = False,
+        is_adapter: Optional[bool] = False,
     ):
         super().__init__()
         self.channels = channels
         self.out_channels = out_channels or channels
         self.use_conv = use_conv
         self.dims = dims
+        self.is_adapter = is_adapter
         stride = 2 if dims != 3 else ((1, 2, 2) if not third_down else (2, 2, 2))
         if use_conv:
             logpy.info(f"Building a Downsample layer with {dims} dims.")
@@ -201,10 +213,11 @@ class Downsample(nn.Module):
             assert self.channels == self.out_channels
             self.op = avg_pool_nd(dims, kernel_size=stride, stride=stride)
 
-    def forward(self, x: th.Tensor) -> th.Tensor:
+    def forward(self, x: th.Tensor, adapConn: Optional[th.Tensor]=None) -> th.Tensor:
         assert x.shape[1] == self.channels
-
-        return self.op(x)
+        out_down = self.op(x)
+        # print("Downsample: ", out_down.shape)
+        return out_down
 
 
 class ResBlock(TimestepBlock):
@@ -238,6 +251,7 @@ class ResBlock(TimestepBlock):
         kernel_size: int = 3,
         exchange_temb_dims: bool = False,
         skip_t_emb: bool = False,
+        is_adapter: Optional[bool] = False,
     ):
         super().__init__()
         self.channels = channels
@@ -248,6 +262,7 @@ class ResBlock(TimestepBlock):
         self.use_checkpoint = use_checkpoint
         self.use_scale_shift_norm = use_scale_shift_norm
         self.exchange_temb_dims = exchange_temb_dims
+        self.is_adapter = is_adapter
 
         if isinstance(kernel_size, Iterable):
             padding = [k // 2 for k in kernel_size]
@@ -313,7 +328,7 @@ class ResBlock(TimestepBlock):
         else:
             self.skip_connection = conv_nd(dims, channels, self.out_channels, 1)
 
-    def forward(self, x: th.Tensor, emb: th.Tensor) -> th.Tensor:
+    def forward(self, x: th.Tensor, emb: th.Tensor, adapConn: Optional[th.Tensor]=None) -> th.Tensor:
         """
         Apply the block to a Tensor, conditioned on a timestep embedding.
         :param x: an [N x C x ...] Tensor of features.
@@ -321,11 +336,11 @@ class ResBlock(TimestepBlock):
         :return: an [N x C x ...] Tensor of outputs.
         """
         if self.use_checkpoint:
-            return checkpoint(self._forward, x, emb)
+            return checkpoint(self._forward, x, emb, adapConn)
         else:
             return self._forward(x, emb)
 
-    def _forward(self, x: th.Tensor, emb: th.Tensor) -> th.Tensor:
+    def _forward(self, x: th.Tensor, emb: th.Tensor, adapConn: Optional[th.Tensor]=None) -> th.Tensor:
         if self.updown:
             in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
             h = in_rest(x)
@@ -351,7 +366,13 @@ class ResBlock(TimestepBlock):
                 emb_out = rearrange(emb_out, "b t c ... -> b c t ...")
             h = h + emb_out
             h = self.out_layers(h)
-        return self.skip_connection(x) + h
+        if adapConn is not None:
+            adapConn = adapConn.cuda()
+            out = self.skip_connection(x) + h + adapConn
+            # print(adapConn.shape)
+            return out
+        else:
+            return self.skip_connection(x) + h
 
 
 class AttentionBlock(nn.Module):
@@ -526,6 +547,7 @@ class UNetModel(nn.Module):
         use_linear_in_transformer: bool = False,
         spatial_transformer_attn_type: str = "softmax",
         adm_in_channels: Optional[int] = None,
+        is_adapter: Optional[bool] = False,
     ):
         super().__init__()
 
@@ -545,6 +567,7 @@ class UNetModel(nn.Module):
         self.in_channels = in_channels
         self.model_channels = model_channels
         self.out_channels = out_channels
+        self.is_adapter = is_adapter
         if isinstance(transformer_depth, int):
             transformer_depth = len(channel_mult) * [transformer_depth]
         transformer_depth_middle = transformer_depth[-1]
@@ -642,6 +665,7 @@ class UNetModel(nn.Module):
                         dims=dims,
                         use_checkpoint=use_checkpoint,
                         use_scale_shift_norm=use_scale_shift_norm,
+                        is_adapter=is_adapter,
                     )
                 ]
                 ch = mult * model_channels
@@ -690,10 +714,11 @@ class UNetModel(nn.Module):
                             use_checkpoint=use_checkpoint,
                             use_scale_shift_norm=use_scale_shift_norm,
                             down=True,
+                            is_adapter=is_adapter,
                         )
                         if resblock_updown
                         else Downsample(
-                            ch, conv_resample, dims=dims, out_channels=out_ch
+                            ch, conv_resample, dims=dims, out_channels=out_ch, is_adapter=is_adapter
                         )
                     )
                 )
@@ -819,6 +844,7 @@ class UNetModel(nn.Module):
         timesteps: Optional[th.Tensor] = None,
         context: Optional[th.Tensor] = None,
         y: Optional[th.Tensor] = None,
+        adapConn_arr:Optional[th.Tensor] = None,
         **kwargs,
     ) -> th.Tensor:
         """
@@ -841,9 +867,22 @@ class UNetModel(nn.Module):
             emb = emb + self.label_emb(y)
 
         h = x
+        i=0
+        a = 0
         for module in self.input_blocks:
-            h = module(h, emb, context)
-            hs.append(h)
+            if adapConn_arr is not None:
+                if i == 2 or i == 5 or i == 7 or i == 8:  
+                    adapConn = adapConn_arr[a]
+                    h = module(h, emb, context, adapConn)
+                    a += 1
+                    hs.append(h)
+                else:
+                    h = module(h, emb, context)
+                    hs.append(h)
+                i += 1
+            else:
+                h = module(h, emb, context)
+                hs.append(h)
         h = self.middle_block(h, emb, context)
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)

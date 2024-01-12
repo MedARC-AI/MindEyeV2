@@ -61,6 +61,7 @@ model:
         transformer_depth: [ 1, 2, 10 ]  # note: the first is unused (due to attn_res starting at 2) 32, 16, 8 --> 64, 32, 16
         context_dim: 1664 #1280
         spatial_transformer_attn_type: softmax-xformers
+        is_adapter: True
 
     conditioner_config:
       target: sgm.modules.GeneralConditioner

@@ -241,12 +241,13 @@ class DiffusionEngine(pl.LightningModule):
         uc: Union[Dict, None] = None,
         batch_size: int = 16,
         shape: Union[None, Tuple, List] = None,
+        adapt_arr: Optional[List]=None,
         **kwargs,
     ):
         randn = torch.randn(batch_size, *shape).to(self.device)
 
         denoiser = lambda input, sigma, c: self.denoiser(
-            self.model, input, sigma, c, **kwargs
+            self.model, input, sigma, c, adapt_arr, **kwargs
         )
         samples = self.sampler(denoiser, randn, cond, uc=uc)
         return samples
@@ -339,3 +340,6 @@ class DiffusionEngine(pl.LightningModule):
             samples = self.decode_first_stage(samples)
             log["samples"] = samples
         return log
+
+    def t2i_unclip(self):
+        return self.model

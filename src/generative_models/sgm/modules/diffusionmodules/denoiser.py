@@ -1,4 +1,4 @@
-from typing import Dict, Union
+from typing import Dict, Union, Optional, List, Dict
 
 import torch
 import torch.nn as nn
@@ -26,6 +26,7 @@ class Denoiser(nn.Module):
         input: torch.Tensor,
         sigma: torch.Tensor,
         cond: Dict,
+        adapt_arr: Optional[List]=None,
         **additional_model_inputs,
     ) -> torch.Tensor:
         sigma = self.possibly_quantize_sigma(sigma)
@@ -33,6 +34,12 @@ class Denoiser(nn.Module):
         sigma = append_dims(sigma, input.ndim)
         c_skip, c_out, c_in, c_noise = self.scaling(sigma)
         c_noise = self.possibly_quantize_c_noise(c_noise.reshape(sigma_shape))
+        if adapt_arr is not None:
+            # print(len(adapt_arr))
+            return (
+            network(input * c_in, c_noise, cond, adapt_arr, **additional_model_inputs) * c_out
+            + input * c_skip
+        )
         return (
             network(input * c_in, c_noise, cond, **additional_model_inputs) * c_out
             + input * c_skip
