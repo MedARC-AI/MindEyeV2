@@ -335,7 +335,7 @@ out_text_dim = clip_text_emb_dim
 depth = 3
 dim_head = 32
 heads = clip_text_emb_dim//32 # heads * dim_head = clip_emb_dim
-timesteps = 50
+timesteps = 100
 git_prior_network = VersatileDiffusionPriorNetwork(
         dim=out_text_dim,
         depth=depth,
