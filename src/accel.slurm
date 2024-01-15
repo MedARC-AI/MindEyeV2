@@ -1,24 +1,25 @@
 #!/bin/bash
-#SBATCH --account=fmri
+#SBATCH --account=topfmri
 #SBATCH --partition=a40x
-#SBATCH --job-name=mindeye
+#SBATCH --job-name=eye
 #SBATCH --nodes=1              
 #SBATCH --ntasks-per-node=8     # should = number of gpus
 #SBATCH --gres=gpu:8
-#SBATCH --time=40:00:00          # total run time limit (HH:MM:SS)
+#SBATCH --time=80:00:00          # total run time limit (HH:MM:SS)
 #SBATCH -e slurms/%j.err        # first create a "slurms" folder in current directory to store logs
 #SBATCH -o slurms/%j.out
 #SBATCH --comment=medarc
+#SBATCH --no-requeue
 
-source ~/.bashrc # activate your virtual environment
-cd PATH_TO_MindEyeV2/src
-jupyter nbconvert Train.ipynb --to python
+source ~/.bashrc
+cd /weka/proj-fmri/paulscotti/MindEyeV2/src
+jupyter nbconvert Train_with_unCLIP.ipynb --to python
 
 export NUM_GPUS=8  # Set to equal gres=gpu:#!
 export BATCH_SIZE=16
 export GLOBAL_BATCH_SIZE=$((BATCH_SIZE * NUM_GPUS))
 
-model_name="model_name"
+model_name="subj01_pretrained_40sess"
 echo model_name=${model_name}
 
 # Make sure another job doesnt use same port, here using random number
@@ -30,4 +31,4 @@ echo MASTER_ADDR=${MASTER_ADDR}
 echo MASTER_PORT=${MASTER_PORT}
 echo WORLD_SIZE=${COUNT_NODE}
 
-accelerate launch --num_processes=$(($NUM_GPUS * $COUNT_NODE)) --num_machines=$COUNT_NODE --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --mixed_precision=fp16 Train.py --data_path=/fsx/proj-fmri/shared/mindeyev2_dataset --model_name=${model_name} --no-multi_subject --subj=1 --batch_size=${BATCH_SIZE} --max_lr=3e-4 --mixup_pct=.33 --num_epochs=200 --use_prior --prior_scale=30 --clip_scale=1. --blur_scale=100. --depth_scale=100. --no-blurry_recon --no-depth_recon --no-use_image_aug --ckpt_interval=10 --ckpt_saving --n_blocks=2 --hidden_dim=3072 --num_sessions=37 --wandb_log --no-visualize_prior
+accelerate launch --num_processes=$(($NUM_GPUS * $COUNT_NODE)) --num_machines=$COUNT_NODE --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --mixed_precision=fp16 Train_with_unCLIP.py --data_path=/weka/proj-fmri/shared/mindeyev2_dataset --model_name=${model_name} --no-multi_subject --subj=1 --batch_size=${BATCH_SIZE} --max_lr=3e-4 --mixup_pct=.33 --num_epochs=150 --use_prior --prior_scale=30 --clip_scale=1. --blur_scale=.5 --git_scale=3 --blurry_recon --no-use_image_aug --ckpt_interval=999 --ckpt_saving --n_blocks=4 --hidden_dim=4096 --num_sessions=40 --wandb_log --no-visualize_prior --use_git --multisubject_ckpt=../train_logs/git_multisubject_150ep_4block_hid4096_bs40
