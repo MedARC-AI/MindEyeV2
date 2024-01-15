@@ -431,3 +431,22 @@ def unclip_recon(x, diffusion_engine, vector_suffix,
         samples = torch.clamp((samples_x*.8+.2), min=0.0, max=1.0)
         # samples = torch.clamp((samples_x + .5) / 2.0, min=0.0, max=1.0)
         return samples
+
+def process_image(imageArray, x=768, y=768):
+    imageArray = imageArray.cpu().numpy().astype(np.uint8)
+    image = Image.fromarray(imageArray)
+    image = image.resize((x, y), resample=Image.Resampling.LANCZOS)
+    return image
+
+#  Numpy Utility 
+def iterate_range(start, length, batchsize):
+    batch_count = int(length // batchsize )
+    residual = int(length % batchsize)
+    for i in range(batch_count):
+        yield range(start+i*batchsize, start+(i+1)*batchsize),batchsize
+    if(residual>0):
+        yield range(start+batch_count*batchsize,start+length),residual 
+        
+# Torch fwRF
+def get_value(_x):
+    return np.copy(_x.data.cpu().numpy())
