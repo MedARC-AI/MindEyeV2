@@ -629,7 +629,7 @@ class Torch_LayerwiseFWRF(nn.Module):
     
 class GNet8_Encoder():
     
-    def __init__(self, subject = 1, device = "cuda"):
+    def __init__(self, subject = 1, device = "cuda", model_path = "gnet_multisubject.pt"):
         
         # Setting up Cuda
         self.device = torch.device(device)
@@ -645,7 +645,7 @@ class GNet8_Encoder():
         self.x_size = subject_sizes[self.subject]
         
         # Reload joined GNet model files
-        self.joined_checkpoint = torch.load('gnet_multisubject', map_location=self.device)
+        self.joined_checkpoint = torch.load(model_path, map_location=self.device)
         
         self.subjects = list(self.joined_checkpoint['voxel_mask'].keys())
         self.gnet8j_voxel_mask = self.joined_checkpoint['voxel_mask']
