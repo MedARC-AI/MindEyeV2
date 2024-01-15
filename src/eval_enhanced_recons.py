@@ -102,6 +102,8 @@ all_clipvoxels = torch.load(f"evals/{model_name}/{model_name}_all_clipvoxels.pt"
 all_blurryrecons = torch.load(f"evals/{model_name}/{model_name}_all_blurryrecons.pt")
 all_predcaptions = torch.load(f"evals/{model_name}/{model_name}_all_predcaptions.pt")
 
+all_recons = transforms.Resize((768,768))(all_recons).float()
+
 print(model_name)
 print(all_images.shape, all_recons.shape, all_clipvoxels.shape, all_blurryrecons.shape, all_predcaptions.shape)
 
