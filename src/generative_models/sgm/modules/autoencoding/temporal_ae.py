@@ -3,16 +3,16 @@ from typing import Callable, Iterable, Union
 import torch
 from einops import rearrange, repeat
 
-from sgm.modules.diffusionmodules.model import (
+from generative_models.sgm.modules.diffusionmodules.model import (
     XFORMERS_IS_AVAILABLE,
     AttnBlock,
     Decoder,
     MemoryEfficientAttnBlock,
     ResnetBlock,
 )
-from sgm.modules.diffusionmodules.openaimodel import ResBlock, timestep_embedding
-from sgm.modules.video_attention import VideoTransformerBlock
-from sgm.util import partialclass
+from generative_models.sgm.modules.diffusionmodules.openaimodel import ResBlock, timestep_embedding
+from generative_models.sgm.modules.video_attention import VideoTransformerBlock
+from generative_models.sgm.util import partialclass
 
 
 class VideoResBlock(ResnetBlock):
