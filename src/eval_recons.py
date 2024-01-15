@@ -528,7 +528,7 @@ with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.float16):
 imsize = 256
 all_recons = transforms.Resize((imsize,imsize))(all_recons).float()
 if blurry_recon: 
-    blurry_recon = transforms.Resize((imsize,imsize))(blurry_recon).float()
+    all_blurryrecons = transforms.Resize((imsize,imsize))(all_blurryrecons).float()
         
 # saving
 print(all_recons.shape)
