@@ -20,8 +20,7 @@ from ...modules.diffusionmodules.openaimodel import Timestep
 from ...modules.diffusionmodules.util import (extract_into_tensor,
                                               make_beta_schedule)
 from ...modules.distributions.distributions import DiagonalGaussianDistribution
-from ...util import (append_dims, autocast, count_params, default,
-                     disabled_train, expand_dims_like, instantiate_from_config)
+from ...util import (append_dims, autocast, count_params, default, expand_dims_like, instantiate_from_config)
 
 
 class AbstractEmbModel(nn.Module):
@@ -83,10 +82,10 @@ class GeneralConditioner(nn.Module):
             embedder.is_trainable = embconfig.get("is_trainable", False)
             embedder.ucg_rate = embconfig.get("ucg_rate", 0.0)
             if not embedder.is_trainable:
-                embedder.train = disabled_train
+                # embedder.train = disabled_train
                 for param in embedder.parameters():
-                    param.requires_grad = False
-                embedder.eval()
+                    param.requires_grad = True
+                embedder.train()
             print(
                 f"Initialized embedder #{n}: {embedder.__class__.__name__} "
                 f"with {count_params(embedder, False)} params. Trainable: {embedder.is_trainable}"
@@ -261,10 +260,10 @@ class FrozenT5Embedder(AbstractEmbModel):
             self.freeze()
 
     def freeze(self):
-        self.transformer = self.transformer.eval()
+        self.transformer = self.transformer.train()
 
         for param in self.parameters():
-            param.requires_grad = False
+            param.requires_grad = True
 
     def forward(self, text):
         batch_encoding = self.tokenizer(
@@ -303,10 +302,10 @@ class FrozenByT5Embedder(AbstractEmbModel):
             self.freeze()
 
     def freeze(self):
-        self.transformer = self.transformer.eval()
+        self.transformer = self.transformer.train()
 
         for param in self.parameters():
-            param.requires_grad = False
+            param.requires_grad = True
 
     def forward(self, text):
         batch_encoding = self.tokenizer(
@@ -359,10 +358,10 @@ class FrozenCLIPEmbedder(AbstractEmbModel):
             assert 0 <= abs(layer_idx) <= 12
 
     def freeze(self):
-        self.transformer = self.transformer.eval()
+        self.transformer = self.transformer.train()
 
         for param in self.parameters():
-            param.requires_grad = False
+            param.requires_grad = True
 
     @autocast
     def forward(self, text):
@@ -436,9 +435,9 @@ class FrozenOpenCLIPEmbedder2(AbstractEmbModel):
         self.legacy = legacy
 
     def freeze(self):
-        self.model = self.model.eval()
+        self.model = self.model.train()
         for param in self.parameters():
-            param.requires_grad = False
+            param.requires_grad = True
 
     @autocast
     def forward(self, text):
@@ -532,9 +531,9 @@ class FrozenOpenCLIPEmbedder(AbstractEmbModel):
             raise NotImplementedError()
 
     def freeze(self):
-        self.model = self.model.eval()
+        self.model = self.model.train()
         for param in self.parameters():
-            param.requires_grad = False
+            param.requires_grad = True
 
     def forward(self, text):
         tokens = open_clip.tokenize(text)
@@ -642,9 +641,9 @@ class FrozenOpenCLIPImageEmbedder(AbstractEmbModel):
         return x
 
     def freeze(self):
-        self.model = self.model.eval()
+        self.model = self.model.train()
         for param in self.parameters():
-            param.requires_grad = False
+            param.requires_grad = True
 
     @autocast
     def forward(self, image, no_dropout=False):

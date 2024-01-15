@@ -388,7 +388,6 @@ def compute_negative_l1_losses(preds, targets):
     
     return negative_losses
 
-
 from generative_models.sgm.util import append_dims
 def unclip_recon(x, diffusion_engine, vector_suffix, adapter_vectors,
                  num_samples=1, offset_noise_level=0.04):
@@ -418,16 +417,16 @@ def unclip_recon(x, diffusion_engine, vector_suffix, adapter_vectors,
             noise = noise + offset_noise_level * append_dims(
                 torch.randn(z.shape[0], device=z.device), z.ndim
             )
-        noised_z = z + noise * append_dims(sigma, z.ndim)
-        noised_z = noised_z / torch.sqrt(
+        prev_noised_z = z + noise * append_dims(sigma, z.ndim)
+        noised_z = prev_noised_z / torch.sqrt(
             1.0 + sigmas[0] ** 2.0
         )  # Note: hardcoded to DDPM-like scaling. need to generalize later.
 
         def denoiser(x, sigma, c):
             return diffusion_engine.denoiser(diffusion_engine.model, x, sigma, c, adapter_vectors)
-
+        print(denoiser)
         samples_z = diffusion_engine.sampler(denoiser, noised_z, cond=c, uc=uc)
         samples_x = diffusion_engine.decode_first_stage(samples_z)
         samples = torch.clamp((samples_x*.8+.2), min=0.0, max=1.0)
         # samples = torch.clamp((samples_x + .5) / 2.0, min=0.0, max=1.0)
-        return samples
+        return samples, sigmas, samples_z

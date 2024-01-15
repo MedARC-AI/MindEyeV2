@@ -59,7 +59,7 @@ model:
         num_head_channels: 64
         use_linear_in_transformer: True
         transformer_depth: [ 1, 2, 10 ]  # note: the first is unused (due to attn_res starting at 2) 32, 16, 8 --> 64, 32, 16
-        context_dim: 1664 #1280
+        context_dim: 1664 #1280 
         spatial_transformer_attn_type: softmax-xformers
         is_adapter: True
 
@@ -68,24 +68,24 @@ model:
       params:
         emb_models:
           # cross atn 
-          - is_trainable: False
+          - is_trainable: True
             input_key: jpg
             target: sgm.modules.encoders.modules.FrozenOpenCLIPImageEmbedder
             params:
               arch: ViT-bigG-14
               version: laion2b_s39b_b160k
-              freeze: True
+              freeze: False
               repeat_to_max_len: False
               output_tokens: True
               only_tokens: True
           # vector cond
-          - is_trainable: False
+          - is_trainable: True
             input_key: original_size_as_tuple
             target: sgm.modules.encoders.modules.ConcatTimestepEmbedderND
             params:
               outdim: 256  # multiplied by two
           # vector cond
-          - is_trainable: False
+          - is_trainable: True
             input_key: crop_coords_top_left
             target: sgm.modules.encoders.modules.ConcatTimestepEmbedderND
             params:

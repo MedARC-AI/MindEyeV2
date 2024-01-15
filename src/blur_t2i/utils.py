@@ -1,158 +1,433 @@
+import numpy as np
+from torchvision import transforms
 import torch
 import torch.nn as nn
-import timm
-from PIL import Image
 import torch.nn.functional as F
+import PIL
+import random
+import os
+import matplotlib.pyplot as plt
+import pandas as pd
+import math
+import webdataset as wds
+import tempfile
+from torchvision.utils import make_grid
 
-class DV2toT2I(nn.Module):
-    def __init__(self, n_blocks=4):
-        super(DV2toT2I, self).__init__()
-        
-        self.init_conv_block = nn.Sequential(
-            nn.Conv2d(1, 64, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.LayerNorm([64, 1024, 1024])
-        )
+import json
+from torchmetrics.image.fid import FrechetInceptionDistance
+from PIL import Image
+import requests
+import io
+import time 
 
-        self.blocks = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(64, 64, kernel_size=3, padding=1),
-                nn.GELU(),
-                nn.LayerNorm([64, 1024, 1024]),
-                nn.Dropout(0.15)
-            ) for _ in range(n_blocks)
-        ])
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+def is_interactive():
+    import __main__ as main
+    return not hasattr(main, '__file__')
+
+def seed_everything(seed=0, cudnn_deterministic=True):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    if cudnn_deterministic:
+        torch.backends.cudnn.deterministic = True
+    else:
+        ## needs to be False to use conv3D
+        print('Note: not using cudnn.deterministic')
+
+def np_to_Image(x):
+    if x.ndim==4:
+        x=x[0]
+    return PIL.Image.fromarray((x.transpose(1, 2, 0)*127.5+128).clip(0,255).astype('uint8'))
+
+def torch_to_Image(x):
+    if x.ndim==4:
+        x=x[0]
+    return transforms.ToPILImage()(x)
+
+def Image_to_torch(x):
+    try:
+        x = (transforms.ToTensor()(x)[:3].unsqueeze(0)-.5)/.5
+    except:
+        x = (transforms.ToTensor()(x[0])[:3].unsqueeze(0)-.5)/.5
+    return x
+
+def torch_to_matplotlib(x,device=device):
+    if torch.mean(x)>10:
+        x = (x.permute(0, 2, 3, 1)).clamp(0, 255).to(torch.uint8)
+    else:
+        x = (x.permute(0, 2, 3, 1) * 255).clamp(0, 255).to(torch.uint8)
+    if device=='cpu':
+        return x[0]
+    else:
+        return x.cpu().numpy()[0]
+
+def pairwise_cosine_similarity(A, B, dim=1, eps=1e-8):
+    #https://stackoverflow.com/questions/67199317/pytorch-cosine-similarity-nxn-elements
+    numerator = A @ B.T
+    A_l2 = torch.mul(A, A).sum(axis=dim)
+    B_l2 = torch.mul(B, B).sum(axis=dim)
+    denominator = torch.max(torch.sqrt(torch.outer(A_l2, B_l2)), torch.tensor(eps))
+    return torch.div(numerator, denominator)
+
+def batchwise_pearson_correlation(Z, B):
+    # Calculate means
+    Z_mean = torch.mean(Z, dim=1, keepdim=True)
+    B_mean = torch.mean(B, dim=1, keepdim=True)
+
+    # Subtract means
+    Z_centered = Z - Z_mean
+    B_centered = B - B_mean
+
+    # Calculate Pearson correlation coefficient
+    numerator = Z_centered @ B_centered.T
+    Z_centered_norm = torch.linalg.norm(Z_centered, dim=1, keepdim=True)
+    B_centered_norm = torch.linalg.norm(B_centered, dim=1, keepdim=True)
+    denominator = Z_centered_norm @ B_centered_norm.T
+
+    pearson_correlation = (numerator / denominator)
+    return pearson_correlation
+
+def batchwise_cosine_similarity(Z,B):
+    Z = Z.flatten(1)
+    B = B.flatten(1).T
+    Z_norm = torch.linalg.norm(Z, dim=1, keepdim=True)  # Size (n, 1).
+    B_norm = torch.linalg.norm(B, dim=0, keepdim=True)  # Size (1, b).
+    cosine_similarity = ((Z @ B) / (Z_norm @ B_norm)).T
+    return cosine_similarity
+
+def prenormed_batchwise_cosine_similarity(Z,B):
+    return (Z @ B.T).T
+
+def cosine_similarity(Z,B,l=0):
+    Z = nn.functional.normalize(Z, p=2, dim=1)
+    B = nn.functional.normalize(B, p=2, dim=1)
+    # if l>0, use distribution normalization
+    # https://twitter.com/YifeiZhou02/status/1716513495087472880
+    Z = Z - l * torch.mean(Z,dim=0)
+    B = B - l * torch.mean(B,dim=0)
+    cosine_similarity = (Z @ B.T).T
+    return cosine_similarity
+
+def topk(similarities,labels,k=5):
+    if k > similarities.shape[0]:
+        k = similarities.shape[0]
+    topsum=0
+    for i in range(k):
+        topsum += torch.sum(torch.argsort(similarities,axis=1)[:,-(i+1)] == labels)/len(labels)
+    return topsum
+
+def get_non_diagonals(a):
+    a = torch.triu(a,diagonal=1)+torch.tril(a,diagonal=-1)
+    # make diagonals -1
+    a=a.fill_diagonal_(-1)
+    return a
+
+def gather_features(image_features, voxel_features, accelerator):  
+    all_image_features = accelerator.gather(image_features.contiguous())
+    if voxel_features is not None:
+        all_voxel_features = accelerator.gather(voxel_features.contiguous())
+        return all_image_features, all_voxel_features
+    return all_image_features
+
+def soft_clip_loss(preds, targs, temp=0.125): #, distributed=False, accelerator=None):
+    # if not distributed:
+    clip_clip = (targs @ targs.T)/temp
+    brain_clip = (preds @ targs.T)/temp
+    # else:
+    #     all_targs = gather_features(targs, None, accelerator)
+    #     clip_clip = (targs @ all_targs.T)/temp
+    #     brain_clip = (preds @ all_targs.T)/temp
     
-
-        self.final_conv = nn.Conv2d(64, 3, kernel_size=3, padding=1)
-
-    def forward(self, x):
-        x = F.interpolate(x, size=(1024, 1024), mode='bilinear', align_corners=True)  # [batch_size, 257, 768]
-        x = self.init_conv_block(x)
-        for block in self.blocks:
-            x = block(x)
-        x = self.final_conv(x)  
-        
-        return x
-
-
-def get_eva02_embeds(eva02_model, image):
-    inp = eva02_model.patch_embed(image)
-    inp = eva02_model.pos_drop(inp)
-    for block in eva02_model.blocks: inp = block(inp)
-    inp = eva02_model.norm(inp)
-    inp = eva02_model.fc_norm(inp)
-    inp = eva02_model.head_drop(inp)
-    output = eva02_model.head(inp)
-    return output
-
-def load_embed_model(model):
-    if model == "eva02":
-        load_model = timm.create_model("eva02_enormous_patch14_clip_224.laion2b", pretrained=True)
-    if model == "clip":
-        assert NotImplementedError("I've yet to add this.")
+    loss1 = -(brain_clip.log_softmax(-1) * clip_clip.softmax(-1)).sum(-1).mean()
+    loss2 = -(brain_clip.T.log_softmax(-1) * clip_clip.softmax(-1)).sum(-1).mean()
     
-    return load_model
+    loss = (loss1 + loss2)/2
+    return loss
 
+def soft_siglip_loss(preds, targs, temp, bias):
+    temp = torch.exp(temp)
+    
+    logits = (preds @ targs.T) * temp + bias
+    # diagonals (aka paired samples) should be >0 and off-diagonals <0
+    labels = (targs @ targs.T) - 1 + (torch.eye(len(targs)).to(targs.dtype).to(targs.device))
 
-# class Clipper(torch.nn.Module):
-#     def __init__(self, clip_variant, clamp_embs=False, norm_embs=False,
-#                  hidden_state=False, device=torch.device('cpu')):
-#         super().__init__()
-#         assert clip_variant in ("RN50", "ViT-L/14", "ViT-B/32", "RN50x64"), \
-#             "clip_variant must be one of RN50, ViT-L/14, ViT-B/32, RN50x64"
-#         print(clip_variant, device)
+    loss1 = -torch.sum(nn.functional.logsigmoid(logits * labels[:len(preds)])) / len(preds)
+    loss2 = -torch.sum(nn.functional.logsigmoid(logits.T * labels[:,:len(preds)])) / len(preds)
+    loss = (loss1 + loss2)/2
+    return loss
+
+def mixco_hard_siglip_loss(preds, targs, temp, bias, perm, betas):
+    temp = torch.exp(temp)
+    
+    probs = torch.diag(betas)
+    probs[torch.arange(preds.shape[0]).to(preds.device), perm] = 1 - betas
+
+    logits = (preds @ targs.T) * temp + bias
+    labels = probs * 2 - 1
+    #labels = torch.eye(len(targs)).to(targs.dtype).to(targs.device) * 2 - 1
+    
+    loss1 = -torch.sum(nn.functional.logsigmoid(logits * labels)) / len(preds)
+    loss2 = -torch.sum(nn.functional.logsigmoid(logits.T * labels)) / len(preds)
+    loss = (loss1 + loss2)/2
+    return loss
+
+def mixco(voxels, beta=0.15, s_thresh=0.5, perm=None, betas=None, select=None):
+    if perm is None:
+        perm = torch.randperm(voxels.shape[0])
+    voxels_shuffle = voxels[perm].to(voxels.device,dtype=voxels.dtype)
+    if betas is None:
+        betas = torch.distributions.Beta(beta, beta).sample([voxels.shape[0]]).to(voxels.device,dtype=voxels.dtype)
+    if select is None:
+        select = (torch.rand(voxels.shape[0]) <= s_thresh).to(voxels.device)
+    betas_shape = [-1] + [1]*(len(voxels.shape)-1)
+    voxels[select] = voxels[select] * betas[select].reshape(*betas_shape) + \
+        voxels_shuffle[select] * (1 - betas[select]).reshape(*betas_shape)
+    betas[~select] = 1
+    return voxels, perm, betas, select
+
+def mixco_clip_target(clip_target, perm, select, betas):
+    clip_target_shuffle = clip_target[perm]
+    clip_target[select] = clip_target[select] * betas[select].reshape(-1, 1) + \
+        clip_target_shuffle[select] * (1 - betas[select]).reshape(-1, 1)
+    return clip_target
+
+def mixco_nce(preds, targs, temp=0.1, perm=None, betas=None, select=None, distributed=False, 
+              accelerator=None, local_rank=None, bidirectional=True):
+    brain_clip = (preds @ targs.T)/temp
+    
+    if perm is not None and betas is not None and select is not None:
+        probs = torch.diag(betas)
+        probs[torch.arange(preds.shape[0]).to(preds.device), perm] = 1 - betas
+
+        loss = -(brain_clip.log_softmax(-1) * probs).sum(-1).mean()
+        if bidirectional:
+            loss2 = -(brain_clip.T.log_softmax(-1) * probs.T).sum(-1).mean()
+            loss = (loss + loss2)/2
+        return loss
+    else:
+        loss =  F.cross_entropy(brain_clip, torch.arange(brain_clip.shape[0]).to(brain_clip.device))
+        if bidirectional:
+            loss2 = F.cross_entropy(brain_clip.T, torch.arange(brain_clip.shape[0]).to(brain_clip.device))
+            loss = (loss + loss2)/2
+        return loss
+    
+def count_params(model):
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print('param counts:\n{:,} total\n{:,} trainable'.format(total, trainable))
+    return trainable
+
+def image_grid(imgs, rows, cols):
+    w, h = imgs[0].size
+    grid = PIL.Image.new('RGB', size=(cols*w, rows*h))
+    for i, img in enumerate(imgs):
+        grid.paste(img, box=(i%cols*w, i//cols*h))
+    return grid
+    
+def check_loss(loss):
+    if loss.isnan().any():
+        raise ValueError('NaN loss')
+
+def cosine_anneal(start, end, steps):
+    return end + (start - end)/2 * (1 + torch.cos(torch.pi*torch.arange(steps)/(steps-1)))
+
+def resize(img, img_size=128):
+    if img.ndim == 3: img = img[None]
+    return nn.functional.interpolate(img, size=(img_size, img_size), mode='nearest')
+
+import braceexpand
+def get_dataloaders(
+    batch_size,
+    image_var='images',
+    num_devices=None,
+    num_workers=None,
+    train_url=None,
+    val_url=None,
+    meta_url=None,
+    num_train=None,
+    num_val=None,
+    cache_dir="/scratch/tmp/wds-cache",
+    seed=0,
+    voxels_key="nsdgeneral.npy",
+    val_batch_size=None,
+    to_tuple=["voxels", "images", "trial"],
+    local_rank=0,
+    world_size=1,
+):
+    print("Getting dataloaders...")
+    assert image_var == 'images'
+    
+    def my_split_by_node(urls):
+        return urls
+    
+    train_url = list(braceexpand.braceexpand(train_url))
+    val_url = list(braceexpand.braceexpand(val_url))
+
+    if num_devices is None:
+        num_devices = torch.cuda.device_count()
+    
+    if num_workers is None:
+        num_workers = num_devices
+    
+    if num_train is None:
+        metadata = json.load(open(meta_url))
+        num_train = metadata['totals']['train']
+    if num_val is None:
+        metadata = json.load(open(meta_url))
+        num_val = metadata['totals']['val']
+
+    if val_batch_size is None:
+        val_batch_size = batch_size
         
-#         if clip_variant=="ViT-L/14" and hidden_state:
-#             # from transformers import CLIPVisionModelWithProjection
-#             # image_encoder = CLIPVisionModelWithProjection.from_pretrained("openai/clip-vit-large-patch14",cache_dir="/fsx/proj-medarc/fmri/cache")
-#             from transformers import CLIPVisionModelWithProjection
-#             sd_cache_dir = '/fsx/proj-fmri/shared/cache/models--shi-labs--versatile-diffusion/snapshots/2926f8e11ea526b562cd592b099fcf9c2985d0b7'
-#             image_encoder = CLIPVisionModelWithProjection.from_pretrained(sd_cache_dir, subfolder='image_encoder').eval()
-#             image_encoder = image_encoder.to(device)
-#             for param in image_encoder.parameters():
-#                 param.requires_grad = False # dont need to calculate gradients
-#             self.image_encoder = image_encoder
-#         elif hidden_state:
-#             raise Exception("hidden_state embeddings only works with ViT-L/14 right now")
-        
-#         clip_model, preprocess = clip.load(clip_variant, device=device)
-#         clip_model.eval() # dont want to train model
-#         for param in clip_model.parameters():
-#             param.requires_grad = False # dont need to calculate gradients
-            
-#         self.clip = clip_model
-#         self.clip_variant = clip_variant
-#         if clip_variant == "RN50x64":
-#             self.clip_size = (448,448)
-#         else:
-#             self.clip_size = (224,224)
-            
-#         preproc = transforms.Compose([
-#             transforms.Resize(size=self.clip_size[0], interpolation=transforms.InterpolationMode.BICUBIC),
-#             transforms.CenterCrop(size=self.clip_size),
-#             transforms.Normalize(mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
-#         ])
-#         self.preprocess = preproc
-#         self.hidden_state = hidden_state
-#         self.mean = np.array([0.48145466, 0.4578275, 0.40821073])
-#         self.std = np.array([0.26862954, 0.26130258, 0.27577711])
-#         self.normalize = transforms.Normalize(self.mean, self.std)
-#         self.denormalize = transforms.Normalize((-self.mean / self.std).tolist(), (1.0 / self.std).tolist())
-#         self.clamp_embs = clamp_embs
-#         self.norm_embs = norm_embs
-#         self.device= device
-        
-#         def versatile_normalize_embeddings(encoder_output):
-#             embeds = encoder_output.last_hidden_state
-#             embeds = image_encoder.vision_model.post_layernorm(embeds)
-#             embeds = image_encoder.visual_projection(embeds)
-#             return embeds
-#         self.versatile_normalize_embeddings = versatile_normalize_embeddings
+    global_batch_size = batch_size * num_devices
+    num_batches = math.floor(num_train / global_batch_size)
+    num_worker_batches = math.floor(num_batches / num_workers)
+    if num_worker_batches == 0: num_worker_batches = 1
+    
+    print("\nnum_train",num_train)
+    print("global_batch_size",global_batch_size)
+    print("batch_size",batch_size)
+    print("num_workers",num_workers)
+    print("num_batches",num_batches)
+    print("num_worker_batches", num_worker_batches)
+    
+    # train_url = train_url[local_rank:world_size]
+    train_data = wds.WebDataset(train_url, resampled=False, cache_dir=cache_dir, nodesplitter=my_split_by_node)\
+        .shuffle(500, initial=500, rng=random.Random(42))\
+        .decode("torch")\
+        .rename(images="jpg;png", voxels=voxels_key, trial="trial.npy", coco="coco73k.npy", reps="num_uniques.npy")\
+        .to_tuple(*to_tuple)#\
+        # .batched(batch_size, partial=True)#\
+        # .with_epoch(num_worker_batches)
+    
+    # BATCH SIZE SHOULD BE NONE!!! FOR TRAIN AND VAL | resampled=True for train | .batched(val_batch_size, partial=False)
+    train_dl = torch.utils.data.DataLoader(train_data, batch_size=batch_size, num_workers=1, shuffle=False)
 
-#     def resize_image(self, image):
-#         # note: antialias should be False if planning to use Pinkney's Image Variation SD model
-#         return transforms.Resize(self.clip_size)(image.to(self.device))
+    # Validation 
+    print("val_batch_size",val_batch_size)
+    val_data = wds.WebDataset(val_url, resampled=False, cache_dir=cache_dir, nodesplitter=my_split_by_node)\
+        .shuffle(500, initial=500, rng=random.Random(42))\
+        .decode("torch")\
+        .rename(images="jpg;png", voxels=voxels_key, trial="trial.npy", coco="coco73k.npy", reps="num_uniques.npy")\
+        .to_tuple(*to_tuple)#\
+        # .batched(val_batch_size, partial=True)
+    val_dl = torch.utils.data.DataLoader(val_data, batch_size=val_batch_size, num_workers=1, shuffle=False, drop_last=True)
 
-#     def embed_image(self, image):
-#         """Expects images in -1 to 1 range"""
-#         if self.hidden_state:
-#             # clip_emb = self.preprocess((image/1.5+.25).to(self.device)) # for some reason the /1.5+.25 prevents oversaturation
-#             clip_emb = self.preprocess((image).to(self.device))
-#             clip_emb = self.image_encoder(clip_emb)
-#             clip_emb = self.versatile_normalize_embeddings(clip_emb)
-#         else:
-#             clip_emb = self.preprocess(image.to(self.device))
-#             clip_emb = self.clip.encode_image(clip_emb)
-#         # input is now in CLIP space, but mind-reader preprint further processes embeddings:
-#         if self.clamp_embs:
-#             clip_emb = torch.clamp(clip_emb, -1.5, 1.5)
-#         if self.norm_embs:
-#             if self.hidden_state:        
-#                 # normalize all tokens by cls token's norm
-#                 clip_emb = clip_emb / torch.norm(clip_emb[:, 0], dim=-1).reshape(-1, 1, 1)
-#             else:
-#                 clip_emb = nn.functional.normalize(clip_emb, dim=-1)
-#         return clip_emb
+    return train_dl, val_dl, num_train, num_val
 
-#     def embed_text(self, text_samples):
-#         clip_text = clip.tokenize(text_samples).to(self.device)
-#         clip_text = self.clip.encode_text(clip_text)
-#         if self.clamp_embs:
-#             clip_text = torch.clamp(clip_text, -1.5, 1.5)
-#         if self.norm_embs:
-#             clip_text = nn.functional.normalize(clip_text, dim=-1)
-#         return clip_text
+pixcorr_preprocess = transforms.Compose([
+    transforms.Resize(425, interpolation=transforms.InterpolationMode.BILINEAR),
+])
+def pixcorr(images,brains,nan=True):
+    all_images_flattened = pixcorr_preprocess(images).reshape(len(images), -1)
+    all_brain_recons_flattened = pixcorr_preprocess(brains).view(len(brains), -1)
+    if nan:
+        corrmean = torch.nanmean(torch.diag(batchwise_pearson_correlation(all_images_flattened, all_brain_recons_flattened)))
+    else:
+        corrmean = torch.mean(torch.diag(batchwise_pearson_correlation(all_images_flattened, all_brain_recons_flattened)))
+    return corrmean
 
-#     def embed_curated_annotations(self, annots):
-#         for i,b in enumerate(annots):
-#             t = ''
-#             while t == '':
-#                 rand = torch.randint(5,(1,1))[0][0]
-#                 t = b[0,rand]
-#             if i==0:
-#                 txt = np.array(t)
-#             else:
-#                 txt = np.vstack((txt,t))
-#         txt = txt.flatten()
-#         return self.embed_text(txt)
+def select_annotations(annots, random=True):
+    """
+    There are 5 annotations per image. Select one of them for each image.
+    """
+    for i, b in enumerate(annots):
+        t = ''
+        if random:
+            # select random non-empty annotation
+            while t == '':
+                rand = torch.randint(5, (1,1))[0][0]
+                t = b[rand]
+        else:
+            # select first non-empty annotation
+            for j in range(5):
+                if b[j] != '':
+                    t = b[j]
+                    break
+        if i == 0:
+            txt = np.array(t)
+        else:
+            txt = np.vstack((txt, t))
+    txt = txt.flatten()
+    return txt
+
+def add_saturation(image, alpha=2):
+    gray_image = 0.2989 * image[:, 0, :, :] + 0.5870 * image[:, 1, :, :] + 0.1140 * image[:, 2, :, :]
+    gray_image = gray_image.unsqueeze(1).expand_as(image)
+    saturated_image = alpha * image + (1 - alpha) * gray_image
+    return torch.clamp(saturated_image, 0, 1)
+
+def find_prompt_by_image_number(image_number, data):
+    target_image_filename = f"img_t{image_number}.jpg"
+    for entry in data:
+        if 'target' in entry and entry['target'].endswith(target_image_filename):
+            return entry['prompt']
+    return -1
+
+def compute_negative_l1_losses(preds, targets):
+    batch_size = preds.size(0)
+    
+    # Expand dimensions for broadcasting
+    expanded_preds = preds.unsqueeze(1)        # Shape: [batch_size, 1, 100]
+    expanded_targets = targets.unsqueeze(0)    # Shape: [1, batch_size, 100]
+    
+    # Compute pairwise L1 differences
+    l1_diffs = torch.abs(expanded_preds - expanded_targets)  # Shape: [batch_size, batch_size, 100]
+    
+    # Mask the diagonal to exclude positive pairs
+    mask = torch.eye(batch_size).bool().to(l1_diffs.device)
+    l1_diffs[mask] = 0
+    
+    # Sum L1 differences for each sample against all negatives
+    negative_losses = l1_diffs.sum(dim=-1).mean()
+    
+    return negative_losses
+
+
+from generative_models.sgm.util import append_dims
+def unclip_recon(x, diffusion_engine, vector_suffix, adapter_vectors,
+                 num_samples=1, offset_noise_level=0.04):
+    assert x.ndim==3
+    if x.shape[0]==1:
+        x = x[[0]]
+    with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.float16), diffusion_engine.ema_scope():
+        z = torch.randn(num_samples,4,96,96).to(device) # starting noise, can change to VAE outputs of initial image for img2img
+
+        # clip_img_tokenized = clip_img_embedder(image) 
+        # tokens = clip_img_tokenized
+        token_shape = x.shape
+        tokens = x
+        c = {"crossattn": tokens.repeat(num_samples,1,1), "vector": vector_suffix.repeat(num_samples,1)}
+
+        tokens = torch.randn_like(x)
+        uc = {"crossattn": tokens.repeat(num_samples,1,1), "vector": vector_suffix.repeat(num_samples,1)}
+
+        for k in c:
+            c[k], uc[k] = map(lambda y: y[k][:num_samples].to(device), (c, uc))
+
+        noise = torch.randn_like(z)
+        sigmas = diffusion_engine.sampler.discretization(diffusion_engine.sampler.num_steps)
+        sigma = sigmas[0].to(z.device)
+
+        if offset_noise_level > 0.0:
+            noise = noise + offset_noise_level * append_dims(
+                torch.randn(z.shape[0], device=z.device), z.ndim
+            )
+        prev_noised_z = z + noise * append_dims(sigma, z.ndim)
+        noised_z = prev_noised_z / torch.sqrt(
+            1.0 + sigmas[0] ** 2.0
+        )  # Note: hardcoded to DDPM-like scaling. need to generalize later.
+
+        def denoiser(x, sigma, c):
+            return diffusion_engine.denoiser(diffusion_engine.model, x, sigma, c, adapter_vectors)
+        # print(denoiser)
+        samples_z = diffusion_engine.sampler(denoiser, noised_z, cond=c, uc=uc)
+        samples_x = diffusion_engine.decode_first_stage(samples_z)
+        samples = torch.clamp((samples_x*.8+.2), min=0.0, max=1.0)
+        # samples = torch.clamp((samples_x + .5) / 2.0, min=0.0, max=1.0)
+        return samples, sigma, samples_z

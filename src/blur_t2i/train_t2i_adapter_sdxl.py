@@ -24,10 +24,12 @@ import shutil
 from pathlib import Path
 import tarfile
 import boto3
-
+import h5py
 import accelerate
 import numpy as np
 import torch
+import torch.nn as nn
+from torchvision import transforms
 import torch.utils.checkpoint
 import transformers
 from accelerate import Accelerator
@@ -43,16 +45,18 @@ from transformers import AutoTokenizer, PretrainedConfig
 
 import diffusers
 from diffusers import (
-    AutoencoderKL,
-    EulerAncestralDiscreteScheduler,
-    EulerDiscreteScheduler,
-    StableDiffusionXLAdapterPipeline,
     T2IAdapter,
-    UNet2DConditionModel,
 )
 from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
+import sys
+sys.path.append('./generative_models/')
+import sgm
+from generative_models.sgm.modules.encoders.modules import FrozenOpenCLIPImageEmbedder
+from generative_models.sgm.models.diffusion import DiffusionEngine
+from omegaconf import OmegaConf
+import utils
 
 
 MAX_SEQ_LENGTH = 77
@@ -64,6 +68,7 @@ if is_wandb_available():
 check_min_version("0.22.0.dev0")
 
 logger = get_logger(__name__)
+
 
 
 def image_grid(imgs, rows, cols):
@@ -82,74 +87,54 @@ def convert_path(emb_path):
     new_path = os.path.join(base_dir, 'target', f'img_t{img_no}.jpg')
 
     return new_path
+    
+def process_image(pil_img):
+    # Convert to RGB
+    rgb_image = pil_img.convert("RGB")
 
+    # Resize image
+    resize = transforms.Resize((768, 768))
+    resized_image = resize(rgb_image)
 
-def log_validation(vae, unet, t2iadapter, args, accelerator, weight_dtype, step):
+    # Convert to tensor
+    to_tensor = transforms.ToTensor()
+    tensor_image = to_tensor(resized_image)
+
+    return tensor_image
+
+def log_validation(diffusion_engine, t2iadapter_extn, clip_model, vector_suffix, args, accelerator, weight_dtype, step):
     logger.info("Running validation... ")
 
-    adapter = accelerator.unwrap_model(t2iadapter)
-    euler_a = EulerAncestralDiscreteScheduler.from_pretrained(
-    args.pretrained_model_name_or_path, subfolder="scheduler"
-    )
-    pipeline = StableDiffusionXLAdapterPipeline.from_pretrained(
-        args.pretrained_model_name_or_path,
-        vae=vae,
-        scheduler=euler_a,
-        adapter=adapter,
-        # revision=args.revision,
-        torch_dtype=torch.float16,
-        # torch_dtype=weight_dtype,
-        variant="fp16"
-    )
-    pipeline = pipeline.to(accelerator.device)
-    pipeline.set_progress_bar_config(disable=True)
-    # pipeline.enable_freeu(s1=0.6, s2=0.4, b1=1.1, b2=1.2)
+    adapter = accelerator.unwrap_model(t2iadapter_extn)
     
     if args.seed is None:
         generator = None
     else:
         generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
-
-    if len(args.validation_image) == len(args.validation_prompt):
-        validation_images = args.validation_image
-        validation_prompts = args.validation_prompt
-    elif len(args.validation_image) == 1:
-        validation_images = args.validation_image * len(args.validation_prompt)
-        validation_prompts = args.validation_prompt
-    elif len(args.validation_prompt) == 1:
-        validation_images = args.validation_image
-        validation_prompts = args.validation_prompt * len(args.validation_image)
-    else:
-        raise ValueError(
-            "number of `args.validation_image` and `args.validation_prompt` should be checked in `parse_args`"
-        )
-
+        
     image_logs = []
-    negative_prompt = "anime, low quality, bad quality, sketches, cartoon, graphic, text, painting, crayon, graphite, abstract, glitch, deformed, mutated, ugly, disfigured"
-    for validation_prompt, validation_image in zip(validation_prompts, validation_images):
-        validation_image = Image.open(validation_image).convert("RGB")
-        validation_image = validation_image.resize((8, 8))
-        color_palette = validation_image.resize((args.resolution, args.resolution), resample=Image.Resampling.NEAREST)
+    for image, validation_image in zip(images, validation_images):
+        validation_image = Image.open(validation_image)
+        image = Image.open(image)
+        proc_val_img = process_image(validation_image)
+        proc_img = process_image(image)
+        img_ten = clip_model(proc_img.unsqueeze(0).to(device))
+
+        adap_vec = t2iadapter_extn(proc_img)
 
 
         # print(prep_emb.shape)
         images = []
 
         for _ in range(args.num_validation_images):
-            with torch.autocast("cuda"):
-                image = pipeline(
-                        prompt=validation_prompt, 
-                        negative_prompt=negative_prompt, 
-                        image=color_palette, 
-                        num_inference_steps=30, 
-                        adapter_conditioning_scale=0.8, 
-                        guidance_scale=7.5, 
-                        generator=generator
-                    ).images[0]
-                images.append(image)
+            
+            img_samples, _, _ = utils.unclip_recon(img_ten,
+                             diffusion_engine,
+                             vector_suffix, adapter_vectors=y)
+            images.append(img_samples)
 
         image_logs.append(
-            {"validation_image": validation_image, "images": images, "validation_prompt": validation_prompt}
+            {"validation_image": validation_image, "images": images}
         )
 
     if args.report_to == "wandb":
@@ -158,12 +143,11 @@ def log_validation(vae, unet, t2iadapter, args, accelerator, weight_dtype, step)
         for log in image_logs:
             images = log["images"]
             validation_prompt = log["validation_prompt"]
-            validation_image = log["validation_image"]
 
             formatted_images.append(wandb.Image(validation_image, caption="T2I segmented conditioning"))
 
             for image in images:
-                image = wandb.Image(image, caption=validation_prompt)
+                image = wandb.Image(image)
                 formatted_images.append(image)
 
         accelerator.log({"validation": formatted_images})
@@ -197,65 +181,8 @@ def import_model_class_from_model_name_or_path(
         raise ValueError(f"{model_class} is not supported.")
 
 
-def save_model_card(repo_id: str, image_logs=None, base_model=str, repo_folder=None):
-    img_str = ""
-    if image_logs is not None:
-        img_str = "You can find some example images below.\n"
-        for i, log in enumerate(image_logs):
-            images = log["images"]
-            validation_prompt = log["validation_prompt"]
-            validation_image = log["validation_image"]
-            validation_image.save(os.path.join(repo_folder, "image_control.png"))
-            img_str += f"prompt: {validation_prompt}\n"
-            images = [validation_image] + images
-            image_grid(images, 1, len(images)).save(os.path.join(repo_folder, f"images_{i}.png"))
-            img_str += f"![images_{i})](./images_{i}.png)\n"
-
-    yaml = f"""
----
-license: creativeml-openrail-m
-base_model: {base_model}
-tags:
-- stable-diffusion-xl
-- stable-diffusion-xl-diffusers
-- text-to-image
-- diffusers
-- t2iadapter
-inference: true
----
-    """
-    model_card = f"""
-# t2iadapter-{repo_id}
-
-These are t2iadapter weights trained on {base_model} with new type of conditioning.
-{img_str}
-"""
-    with open(os.path.join(repo_folder, "README.md"), "w") as f:
-        f.write(yaml + model_card)
-
-
 def parse_args(input_args=None):
     parser = argparse.ArgumentParser(description="Simple example of a ControlNet training script.")
-    parser.add_argument(
-        "--pretrained_model_name_or_path",
-        type=str,
-        default=None,
-        required=True,
-        help="Path to pretrained model or model identifier from huggingface.co/models.",
-    )
-    parser.add_argument(
-        "--pretrained_vae_model_name_or_path",
-        type=str,
-        default=None,
-        help="Path to an improved VAE to stabilize training. For more details check out: https://github.com/huggingface/diffusers/pull/4038.",
-    )
-    parser.add_argument(
-        "--adapter_model_name_or_path",
-        type=str,
-        default=None,
-        help="Path to pretrained adapter model or model identifier from huggingface.co/models."
-        " If not specified adapter weights are initialized w.r.t the configurations of SDXL.",
-    )
     parser.add_argument(
         "--revision",
         type=str,
@@ -265,12 +192,6 @@ def parse_args(input_args=None):
             "Revision of pretrained model identifier from huggingface.co/models. Trainable model components should be"
             " float32 precision."
         ),
-    )
-    parser.add_argument(
-        "--tokenizer_name",
-        type=str,
-        default=None,
-        help="Pretrained tokenizer name or path if not the same as model_name",
     )
     parser.add_argument(
         "--output_dir",
@@ -288,7 +209,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--resolution",
         type=int,
-        default=1024,
+        default=768,
         help=(
             "The resolution for input images, all the images in the train/validation dataset will be resized to this"
             " resolution"
@@ -328,7 +249,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--checkpointing_steps",
         type=int,
-        default=500,
+        default=5,
         help=(
             "Save a checkpoint of the training state every X updates. Checkpoints can be used for resuming training via `--resume_from_checkpoint`. "
             "In the case that the checkpoint is better than the final trained model, the checkpoint can also be used for inference."
@@ -436,7 +357,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--report_to",
         type=str,
-        default="tensorboard",
+        default="wandb",
         help=(
             'The integration to report the results and logs to. Supported platforms are `"tensorboard"`'
             ' (default), `"wandb"` and `"comet_ml"`. Use `"all"` to report to all integrations.'
@@ -492,44 +413,21 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
-        "--image_column", type=str, default="image", help="The column of the dataset containing the target image."
+        "--image_column", type=str, default="target", help="The column of the dataset containing the target image."
     )
     parser.add_argument(
         "--conditioning_image_column",
         type=str,
-        default="conditioning_image",
+        default="source",
         help="The column of the dataset containing the adapter conditioning image.",
-    )
-    parser.add_argument(
-        "--caption_column",
-        type=str,
-        default="text",
-        help="The column of the dataset containing a caption or a list of captions.",
     )
     parser.add_argument(
         "--max_train_samples",
         type=int,
-        default=None,
+        default=20,
         help=(
             "For debugging purposes or quicker training, truncate the number of training examples to this "
             "value if set."
-        ),
-    )
-    parser.add_argument(
-        "--proportion_empty_prompts",
-        type=float,
-        default=0,
-        help="Proportion of image prompts to be replaced with empty strings. Defaults to 0 (no prompt replacement).",
-    )
-    parser.add_argument(
-        "--validation_prompt",
-        type=str,
-        default=None,
-        nargs="+",
-        help=(
-            "A set of prompts evaluated every `--validation_steps` and logged to `--report_to`."
-            " Provide either a matching number of `--validation_image`s, a single `--validation_image`"
-            " to be used with all prompts, or a single prompt that will be used with all `--validation_image`s."
         ),
     )
     parser.add_argument(
@@ -553,7 +451,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--validation_steps",
         type=int,
-        default=100,
+        default=2,
         help=(
             "Run validation every X steps. Validation consists of running the prompt"
             " `args.validation_prompt` multiple times: `args.num_validation_images`"
@@ -563,7 +461,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--tracker_project_name",
         type=str,
-        default="sd_xl_train_t2iadapter",
+        default="unclip_t2iadapter",
         help=(
             "The `project_name` argument passed to Accelerator.init_trackers for"
             " more information see https://huggingface.co/docs/accelerate/v0.17.0/en/package_reference/accelerator#accelerate.Accelerator"
@@ -583,37 +481,37 @@ def parse_args(input_args=None):
     else:
         args = parser.parse_args()
 
-    if args.dataset_name is None and args.train_data_dir is None:
-        raise ValueError("Specify either `--dataset_name` or `--train_data_dir`")
+    # if args.dataset_name is None and args.train_data_dir is None:
+    #     raise ValueError("Specify either `--dataset_name` or `--train_data_dir`")
 
-    if args.dataset_name is not None and args.train_data_dir is not None:
-        raise ValueError("Specify only one of `--dataset_name` or `--train_data_dir`")
+    # if args.dataset_name is not None and args.train_data_dir is not None:
+    #     raise ValueError("Specify only one of `--dataset_name` or `--train_data_dir`")
 
-    if args.proportion_empty_prompts < 0 or args.proportion_empty_prompts > 1:
-        raise ValueError("`--proportion_empty_prompts` must be in the range [0, 1].")
+    # if args.proportion_empty_prompts < 0 or args.proportion_empty_prompts > 1:
+    #     raise ValueError("`--proportion_empty_prompts` must be in the range [0, 1].")
 
-    if args.validation_prompt is not None and args.validation_image is None:
-        raise ValueError("`--validation_image` must be set if `--validation_prompt` is set")
+    # if args.validation_prompt is not None and args.validation_image is None:
+    #     raise ValueError("`--validation_image` must be set if `--validation_prompt` is set")
 
-    if args.validation_prompt is None and args.validation_image is not None:
-        raise ValueError("`--validation_prompt` must be set if `--validation_image` is set")
+    # if args.validation_prompt is None and args.validation_image is not None:
+    #     raise ValueError("`--validation_prompt` must be set if `--validation_image` is set")
 
-    if (
-        args.validation_image is not None
-        and args.validation_prompt is not None
-        and len(args.validation_image) != 1
-        and len(args.validation_prompt) != 1
-        and len(args.validation_image) != len(args.validation_prompt)
-    ):
-        raise ValueError(
-            "Must provide either 1 `--validation_image`, 1 `--validation_prompt`,"
-            " or the same number of `--validation_prompt`s and `--validation_image`s"
-        )
+    # if (
+    #     args.validation_image is not None
+    #     and args.validation_prompt is not None
+    #     and len(args.validation_image) != 1
+    #     and len(args.validation_prompt) != 1
+    #     and len(args.validation_image) != len(args.validation_prompt)
+    # ):
+    #     raise ValueError(
+    #         "Must provide either 1 `--validation_image`, 1 `--validation_prompt`,"
+    #         " or the same number of `--validation_prompt`s and `--validation_image`s"
+    #     )
 
-    if args.resolution % 8 != 0:
-        raise ValueError(
-            "`--resolution` must be divisible by 8 for consistently sized encoded images between the VAE and the t2iadapter encoder."
-        )
+    # if args.resolution % 8 != 0:
+    #     raise ValueError(
+    #         "`--resolution` must be divisible by 8 for consistently sized encoded images between the VAE and the t2iadapter encoder."
+    #     )
 
     return args
 
@@ -658,16 +556,6 @@ def get_train_dataset(args, accelerator):
                 f"`--image_column` value '{args.image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
             )
 
-    if args.caption_column is None:
-        caption_column = column_names[1]
-        logger.info(f"caption column defaulting to {caption_column}")
-    else:
-        caption_column = args.caption_column
-        if caption_column not in column_names:
-            raise ValueError(
-                f"`--caption_column` value '{args.caption_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-            )
-
     if args.conditioning_image_column is None:
         conditioning_image_column = column_names[2]
         logger.info(f"conditioning image column defaulting to {conditioning_image_column}")
@@ -685,48 +573,8 @@ def get_train_dataset(args, accelerator):
     return train_dataset
 
 
-# Adapted from pipelines.StableDiffusionXLPipeline.encode_prompt
-def encode_prompt(prompt_batch, text_encoders, tokenizers, proportion_empty_prompts, is_train=True):
-    prompt_embeds_list = []
 
-    captions = []
-    for caption in prompt_batch:
-        if random.random() < proportion_empty_prompts:
-            captions.append("")
-        elif isinstance(caption, str):
-            captions.append(caption)
-        elif isinstance(caption, (list, np.ndarray)):
-            # take a random caption if there are multiple
-            captions.append(random.choice(caption) if is_train else caption[0])
-
-    with torch.no_grad():
-        for tokenizer, text_encoder in zip(tokenizers, text_encoders):
-            text_inputs = tokenizer(
-                captions,
-                padding="max_length",
-                max_length=tokenizer.model_max_length,
-                truncation=True,
-                return_tensors="pt",
-            )
-            text_input_ids = text_inputs.input_ids
-            prompt_embeds = text_encoder(
-                text_input_ids.to(text_encoder.device),
-                output_hidden_states=True,
-            )
-
-            # We are only ALWAYS interested in the pooled output of the final text encoder
-            pooled_prompt_embeds = prompt_embeds[0]
-            prompt_embeds = prompt_embeds.hidden_states[-2]
-            bs_embed, seq_len, _ = prompt_embeds.shape
-            prompt_embeds = prompt_embeds.view(bs_embed, seq_len, -1)
-            prompt_embeds_list.append(prompt_embeds)
-
-    prompt_embeds = torch.concat(prompt_embeds_list, dim=-1)
-    pooled_prompt_embeds = pooled_prompt_embeds.view(bs_embed, -1)
-    return prompt_embeds, pooled_prompt_embeds
-
-
-def prepare_train_dataset(dataset, accelerator):
+def prepare_train_dataset(dataset, clip_model, accelerator):
     image_transforms = transforms.Compose(
         [
             transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
@@ -738,7 +586,7 @@ def prepare_train_dataset(dataset, accelerator):
 
     conditioning_image_transforms = transforms.Compose(
         [
-            # transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+            transforms.Resize((768, 768), interpolation=transforms.InterpolationMode.BILINEAR),
             transforms.CenterCrop(args.resolution),
             transforms.ToTensor(),
         ]
@@ -747,11 +595,14 @@ def prepare_train_dataset(dataset, accelerator):
     def preprocess_train(examples):
         images = [image.convert("RGB") for image in examples[args.image_column]]
         images = [image_transforms(image) for image in images]
+        clip_images = [clip_model(image.unsqueeze(0)) for image in images]
 
-        conditioning_images = [image.convert("RGB").resize((8,8)).resize((args.resolution, args.resolution), resample=Image.Resampling.NEAREST) for image in examples[args.conditioning_image_column]]
+        # conditioning_images = [image.convert("RGB").resize((8,8)).resize((args.resolution, args.resolution), resample=Image.Resampling.NEAREST) for image in examples[args.conditioning_image_column]]
+        conditioning_images = [image.convert("RGB") for image in examples[args.conditioning_image_column]]
         conditioning_images = [conditioning_image_transforms(image) for image in conditioning_images]
 
         examples["pixel_values"] = images
+        examples["clip_values"] = clip_images
         examples["conditioning_pixel_values"] = conditioning_images
 
         return examples
@@ -765,20 +616,21 @@ def prepare_train_dataset(dataset, accelerator):
 def collate_fn(examples):
     pixel_values = torch.stack([example["pixel_values"] for example in examples])
     pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
+    
+    clip_values = torch.stack([example["clip_values"] for example in examples])
+    clip_values = clip_values.squeeze(1)
+    clip_values = clip_values.to(memory_format=torch.contiguous_format).float()
 
     conditioning_pixel_values = torch.stack([example["conditioning_pixel_values"] for example in examples])
     conditioning_pixel_values = conditioning_pixel_values.to(memory_format=torch.contiguous_format).float()
 
-    prompt_ids = torch.stack([torch.tensor(example["prompt_embeds"]) for example in examples])
-
-    add_text_embeds = torch.stack([torch.tensor(example["text_embeds"]) for example in examples])
-    add_time_ids = torch.stack([torch.tensor(example["time_ids"]) for example in examples])
 
     return {
         "pixel_values": pixel_values,
+        "clip_values": clip_values,
         "conditioning_pixel_values": conditioning_pixel_values,
-        "prompt_ids": prompt_ids,
-        "unet_added_conditions": {"text_embeds": add_text_embeds, "time_ids": add_time_ids},
+        # "prompt_ids": prompt_ids,
+        # "unet_added_conditions": {"text_embeds": add_text_embeds, "time_ids": add_time_ids},
     }
 
 def create_tarball(source_dir, tarball_name):
@@ -811,6 +663,40 @@ def offload_to_s3(args, source_dir, bucket, s3_path, global_step):
     return True
 
 
+
+class downSampleExtn(nn.Module):
+    def __init__(self):
+        super(downSampleExtn, self).__init__()
+        self.conv2 = nn.Conv2d(in_channels=640, out_channels=640, kernel_size=3, stride=1, padding=1)
+        self.downsample2 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)  # Reduce to [1, 640, 48, 48]
+
+        self.conv3 = nn.Conv2d(in_channels=1280, out_channels=1280, kernel_size=3, stride=1, padding=1)
+        self.downsample3 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)  # Reduce to [1, 1280, 24, 24]
+
+        self.conv4 = nn.Conv2d(in_channels=1280, out_channels=1280, kernel_size=3, stride=1, padding=1)
+        self.downsample4 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)  # Reduce to [1, 1280, 24, 24]
+
+    def forward(self, x2, x3, x4):
+        x2 = self.downsample2(self.conv2(x2))
+        x3 = self.downsample3(self.conv3(x3))
+        x4 = self.downsample4(self.conv4(x4))
+        return x2, x3, x4
+
+
+
+class T2IAdapterExtn(nn.Module):
+    def __init__(self, t2iadapterXL, extn):
+        super(T2IAdapterExtn, self).__init__()
+        self.t2iadapterXL = t2iadapterXL
+        self.extn = extn
+
+    def forward(self, x):
+        ten_arr = self.t2iadapterXL(x)
+        x1, x2, x3 = self.extn(ten_arr[1], ten_arr[2], ten_arr[3])
+        unet_residuals = [ten_arr[0], x1, x2, x3]
+        return unet_residuals
+        
+
 def main(args):
     logging_dir = Path(args.output_dir, args.logging_dir)
 
@@ -822,6 +708,13 @@ def main(args):
         log_with=args.report_to,
         project_config=accelerator_project_config,
     )
+    device = accelerator.device
+    
+    weight_dtype = torch.float32
+    if accelerator.mixed_precision == "fp16":
+        weight_dtype = torch.float16
+    elif accelerator.mixed_precision == "bf16":
+        weight_dtype = torch.bfloat16
 
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
@@ -846,93 +739,25 @@ def main(args):
         if args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
 
-        if args.push_to_hub:
-            repo_id = create_repo(
-                repo_id=args.hub_model_id or Path(args.output_dir).name,
-                exist_ok=True,
-                token=args.hub_token,
-                private=True,
-            ).repo_id
 
-    # Load the tokenizers
-    tokenizer_one = AutoTokenizer.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="tokenizer", revision=args.revision, use_fast=False
-    )
-    tokenizer_two = AutoTokenizer.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="tokenizer_2", revision=args.revision, use_fast=False
-    )
-
-    # import correct text encoder classes
-    text_encoder_cls_one = import_model_class_from_model_name_or_path(
-        args.pretrained_model_name_or_path, args.revision
-    )
-    text_encoder_cls_two = import_model_class_from_model_name_or_path(
-        args.pretrained_model_name_or_path, args.revision, subfolder="text_encoder_2"
-    )
-
-    # Load scheduler and models
-    noise_scheduler = EulerDiscreteScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
-    text_encoder_one = text_encoder_cls_one.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision
-    )
-    text_encoder_two = text_encoder_cls_two.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="text_encoder_2", revision=args.revision
-    )
-    vae = AutoencoderKL.from_pretrained("madebyollin/sdxl-vae-fp16-fix", torch_dtype=torch.float16)
-    unet = UNet2DConditionModel.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision
-    )
-
-    if args.adapter_model_name_or_path:
-        logger.info("Loading existing adapter weights.")
-        t2iadapter = T2IAdapter.from_pretrained(args.adapter_model_name_or_path)
-    else:
-        logger.info("Initializing t2iadapter weights.")
-        t2iadapter = T2IAdapter(
+    logger.info("Initializing t2iadapter weights.")
+    t2iadapter = T2IAdapter(
             in_channels=3,
             channels=(320, 640, 1280, 1280),
             num_res_blocks=2,
-            downscale_factor=16,
+            downscale_factor=8,
             adapter_type="full_adapter_xl",
         )
-
-    # `accelerate` 0.16.0 will have better support for customized saving
-    if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
-        # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
-        def save_model_hook(models, weights, output_dir):
-            i = len(weights) - 1
-
-            while len(weights) > 0:
-                weights.pop()
-                model = models[i]
-
-                sub_dir = "t2iadapter"
-                model.save_pretrained(os.path.join(output_dir, sub_dir))
-
-                i -= 1
-
-        def load_model_hook(models, input_dir):
-            while len(models) > 0:
-                # pop models so that they are not loaded again
-                model = models.pop()
-
-                # load diffusers style into model
-                load_model = T2IAdapter.from_pretrained(os.path.join(input_dir, "t2iadapter"))
-
-                if args.control_type != "style":
-                    model.register_to_config(**load_model.config)
-
-                model.load_state_dict(load_model.state_dict())
-                del load_model
-
-        accelerator.register_save_state_pre_hook(save_model_hook)
-        accelerator.register_load_state_pre_hook(load_model_hook)
-
-    vae.requires_grad_(False)
-    text_encoder_one.requires_grad_(False)
-    text_encoder_two.requires_grad_(False)
     t2iadapter.train()
-    unet.train()
+    downSample = downSampleExtn()
+    downSample.train()
+    t2iadapter_extn = T2IAdapterExtn(t2iadapter, downSample)
+    f = h5py.File(f'/weka/proj-fmri/shared/mindeyev2_dataset/coco_images_224_float16.hdf5', 'r')
+    images = f['images'][:1]
+    images = torch.Tensor(images).to("cpu").to(weight_dtype)
+
+    t2iadapter_extn.requires_grad_(True)
+    t2iadapter_extn.train()
 
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
@@ -956,10 +781,10 @@ def main(args):
         " doing mixed precision training, copy of the weights should still be float32."
     )
 
-    if accelerator.unwrap_model(t2iadapter).dtype != torch.float32:
-        raise ValueError(
-            f"Controlnet loaded as datatype {accelerator.unwrap_model(t2iadapter).dtype}. {low_precision_error_string}"
-        )
+    # if accelerator.unwrap_model(t2iadapter_extn).dtype != torch.float32:
+    #     raise ValueError(
+    #         f"Controlnet loaded as datatype {accelerator.unwrap_model(t2iadapter_extn).dtype}. {low_precision_error_string}"
+    #     )
 
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
@@ -985,101 +810,126 @@ def main(args):
         optimizer_class = torch.optim.AdamW
 
     # Optimizer creation
-    params_to_optimize = t2iadapter.parameters()
+    params_to_optimize = t2iadapter_extn.parameters()
 
-    if args.use_deepspeed:
-        optimizer = accelerate.utils.DummyOptim(
+
+    optimizer = optimizer_class(
             params_to_optimize,
             lr=args.learning_rate,
             betas=(args.adam_beta1, args.adam_beta2),
             weight_decay=args.adam_weight_decay,
             eps=args.adam_epsilon,
         )
-    else:
-        optimizer = optimizer_class(
-            params_to_optimize,
-            lr=args.learning_rate,
-            betas=(args.adam_beta1, args.adam_beta2),
-            weight_decay=args.adam_weight_decay,
-            eps=args.adam_epsilon,
-        )
+    
+    clip_img_embedder = FrozenOpenCLIPImageEmbedder(
+        arch="ViT-bigG-14",
+        version="laion2b_s39b_b160k",
+        output_tokens=True,
+        only_tokens=True,
+    )
+    clip_img_embedder.to("cpu")
 
-    # For mixed precision training we cast the text_encoder and vae weights to half-precision
-    # as these models are only used for inference, keeping weights in full precision is not required.
-    weight_dtype = torch.float32
-    if accelerator.mixed_precision == "fp16":
-        weight_dtype = torch.float16
-    elif accelerator.mixed_precision == "bf16":
-        weight_dtype = torch.bfloat16
+    #unCLIP setup
+    config = OmegaConf.load("generative_models/configs/unclip6.yaml")
+    config = OmegaConf.to_container(config, resolve=True)
+    unclip_params = config["model"]["params"]
+    network_config = unclip_params["network_config"]
+    denoiser_config = unclip_params["denoiser_config"]
+    first_stage_config = unclip_params["first_stage_config"]
+    conditioner_config = unclip_params["conditioner_config"]
+    sampler_config = unclip_params["sampler_config"]
+    scale_factor = unclip_params["scale_factor"]
+    disable_first_stage_autocast = unclip_params["disable_first_stage_autocast"]
+    offset_noise_level = unclip_params["loss_fn_config"]["params"]["offset_noise_level"]
+    
+    first_stage_config['target'] = 'sgm.models.autoencoder.AutoencoderKL'
+    sampler_config['params']['num_steps'] = 38
+    
+    diffusion_engine = DiffusionEngine(network_config=network_config,
+                                   denoiser_config=denoiser_config,
+                                   first_stage_config=first_stage_config,
+                                   conditioner_config=conditioner_config,
+                                   sampler_config=sampler_config,
+                                   scale_factor=scale_factor,
+                                   disable_first_stage_autocast=disable_first_stage_autocast)
+            # set to inference
+    diffusion_engine.to(device)
+    clip_img_embedder.requires_grad_(False)
+    diffusion_engine.train().requires_grad_(True)
+    
+    ckpt_path = '/weka/proj-fmri/shared/cache/sdxl_unclip/unclip6_epoch0_step110000.ckpt'
+    ckpt = torch.load(ckpt_path, map_location='cpu')
+    diffusion_engine.load_state_dict(ckpt['state_dict'])
+    
+    image = images[:1].to(device)
+    batch={"jpg": image,
+                  "original_size_as_tuple": torch.ones(image.shape[0], 2).to(device) * image.shape[-1],
+                  "crop_coords_top_left": torch.zeros(image.shape[0], 2).to(device)}
+    out = diffusion_engine.conditioner(batch)
+    vector_suffix = out["vector"].to(device)
+    
+    # print("vector_suffix", vector_suffix.shape)
 
-    # Move vae, unet and text_encoder to device and cast to weight_dtype
-    # The VAE is in float32 to avoid NaN losses.
-    if args.pretrained_vae_model_name_or_path is not None:
-        vae.to(accelerator.device, dtype=weight_dtype)
-    else:
-        vae.to(accelerator.device, dtype=torch.float32)
-    unet.to(accelerator.device, dtype=weight_dtype)
-    text_encoder_one.to(accelerator.device, dtype=weight_dtype)
-    text_encoder_two.to(accelerator.device, dtype=weight_dtype)
+    #unCLIP setup
 
     # Here, we compute not just the text embeddings but also the additional embeddings
     # needed for the SD XL UNet to operate.
-    def compute_embeddings(batch, proportion_empty_prompts, text_encoders, tokenizers, is_train=True):
-        original_size = (args.resolution, args.resolution)
-        target_size = (args.resolution, args.resolution)
-        crops_coords_top_left = (args.crops_coords_top_left_h, args.crops_coords_top_left_w)
-        prompt_batch = batch[args.caption_column]
+    # def compute_embeddings(batch, proportion_empty_prompts, text_encoders, tokenizers, is_train=True):
+    #     original_size = (args.resolution, args.resolution)
+    #     target_size = (args.resolution, args.resolution)
+    #     crops_coords_top_left = (args.crops_coords_top_left_h, args.crops_coords_top_left_w)
+    #     img_batch = batch[args.image_column]
 
-        prompt_embeds, pooled_prompt_embeds = encode_prompt(
-            prompt_batch, text_encoders, tokenizers, proportion_empty_prompts, is_train
-        )
-        add_text_embeds = pooled_prompt_embeds
+    #     prompt_embeds, pooled_prompt_embeds = encode_prompt(
+    #         prompt_batch, text_encoders, tokenizers, proportion_empty_prompts, is_train
+    #     )
+    #     add_text_embeds = pooled_prompt_embeds
 
-        # Adapted from pipeline.StableDiffusionXLPipeline._get_add_time_ids
-        add_time_ids = list(original_size + crops_coords_top_left + target_size)
-        add_time_ids = torch.tensor([add_time_ids])
+    #     # Adapted from pipeline.StableDiffusionXLPipeline._get_add_time_ids
+    #     add_time_ids = list(original_size + crops_coords_top_left + target_size)
+    #     add_time_ids = torch.tensor([add_time_ids])
 
-        prompt_embeds = prompt_embeds.to(accelerator.device)
-        add_text_embeds = add_text_embeds.to(accelerator.device)
-        add_time_ids = add_time_ids.repeat(len(prompt_batch), 1)
-        add_time_ids = add_time_ids.to(accelerator.device, dtype=prompt_embeds.dtype)
-        unet_added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
+    #     prompt_embeds = prompt_embeds.to(accelerator.device)
+    #     add_text_embeds = add_text_embeds.to(accelerator.device)
+    #     add_time_ids = add_time_ids.repeat(len(prompt_batch), 1)
+    #     add_time_ids = add_time_ids.to(accelerator.device, dtype=prompt_embeds.dtype)
+    #     unet_added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
 
-        return {"prompt_embeds": prompt_embeds, **unet_added_cond_kwargs}
+    #     return {"prompt_embeds": prompt_embeds, **unet_added_cond_kwargs}
 
-    def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
-        sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=dtype)
-        schedule_timesteps = noise_scheduler.timesteps.to(accelerator.device)
-        timesteps = timesteps.to(accelerator.device)
+    # def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
+    #     sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=dtype)
+    #     schedule_timesteps = noise_scheduler.timesteps.to(accelerator.device)
+    #     timesteps = timesteps.to(accelerator.device)
 
-        step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
+    #     step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
 
-        sigma = sigmas[step_indices].flatten()
-        while len(sigma.shape) < n_dim:
-            sigma = sigma.unsqueeze(-1)
-        return sigma
+    #     sigma = sigmas[step_indices].flatten()
+    #     while len(sigma.shape) < n_dim:
+    #         sigma = sigma.unsqueeze(-1)
+    #     return sigma
 
     # Let's first compute all the embeddings so that we can free up the text encoders
-    # from memory.
-    text_encoders = [text_encoder_one, text_encoder_two]
-    tokenizers = [tokenizer_one, tokenizer_two]
+    # # from memory.
+    # text_encoders = [text_encoder_one, text_encoder_two]
+    # tokenizers = [tokenizer_one, tokenizer_two]
     train_dataset = get_train_dataset(args, accelerator)
-    compute_embeddings_fn = functools.partial(
-        compute_embeddings,
-        proportion_empty_prompts=args.proportion_empty_prompts,
-        text_encoders=text_encoders,
-        tokenizers=tokenizers,
-    )
-    with accelerator.main_process_first():
-        from datasets.fingerprint import Hasher
+    # compute_embeddings_fn = functools.partial(
+    #     compute_embeddings,
+    #     proportion_empty_prompts=args.proportion_empty_prompts,
+    #     text_encoders=text_encoders,
+    #     tokenizers=tokenizers,
+    # )
+    # with accelerator.main_process_first():
+    #     from datasets.fingerprint import Hasher
 
-        # fingerprint used by the cache for the other processes to load the result
-        # details: https://github.com/huggingface/diffusers/pull/4038#discussion_r1266078401
-        new_fingerprint = Hasher.hash(args)
-        train_dataset = train_dataset.map(compute_embeddings_fn, batched=True, new_fingerprint=new_fingerprint)
+    #     # fingerprint used by the cache for the other processes to load the result
+    #     # details: https://github.com/huggingface/diffusers/pull/4038#discussion_r1266078401
+    #     new_fingerprint = Hasher.hash(args)
+    #     train_dataset = train_dataset.map(compute_embeddings_fn, batched=True, new_fingerprint=new_fingerprint)
 
     # Then get the training dataset ready to be passed to the dataloader.
-    train_dataset = prepare_train_dataset(train_dataset, accelerator)
+    train_dataset = prepare_train_dataset(train_dataset, clip_img_embedder, accelerator)
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -1096,12 +946,8 @@ def main(args):
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
 
-    if args.use_deepspeed:
-        lr_scheduler = accelerate.utils.DummyScheduler(
-            optimizer, total_num_steps=args.max_train_steps, warmup_num_steps=args.lr_warmup_steps
-        )
-    else:
-        lr_scheduler = get_scheduler(
+
+    lr_scheduler = get_scheduler(
             args.lr_scheduler,
             optimizer=optimizer,
             num_warmup_steps=args.lr_warmup_steps,
@@ -1111,8 +957,8 @@ def main(args):
         )
 
     # Prepare everything with our `accelerator`.
-    t2iadapter, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        t2iadapter, optimizer, train_dataloader, lr_scheduler
+    t2iadapter_extn, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        t2iadapter_extn, optimizer, train_dataloader, lr_scheduler
     )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -1128,8 +974,8 @@ def main(args):
         tracker_config = dict(vars(args))
 
         # tensorboard cannot handle list types for config
-        tracker_config.pop("validation_prompt")
-        tracker_config.pop("validation_image")
+        # tracker_config.pop("validation_prompt")
+        # tracker_config.pop("validation_image")
 
         accelerator.init_trackers(args.tracker_project_name, config=tracker_config)
 
@@ -1184,70 +1030,100 @@ def main(args):
     )
 
     image_logs = None
+    
     for epoch in range(first_epoch, args.num_train_epochs):
         for step, batch in enumerate(train_dataloader):
-            with accelerator.accumulate(t2iadapter):
-                if args.pretrained_vae_model_name_or_path is not None:
+            with accelerator.accumulate(t2iadapter_extn):
+                if True:
                     pixel_values = batch["pixel_values"].to(dtype=weight_dtype)
+                    clip_values = batch["clip_values"].to(dtype=weight_dtype)
                 else:
                     pixel_values = batch["pixel_values"]
+                    clip_values = batch["clip_values"]
 
-                # encode pixel values with batch size of at most 8 to avoid OOM
-                latents = []
-                for i in range(0, pixel_values.shape[0], 8):
-                    latents.append(vae.encode(pixel_values[i : i + 8]).latent_dist.sample())
-                latents = torch.cat(latents, dim=0)
-                latents = latents * vae.config.scaling_factor
-                if args.pretrained_vae_model_name_or_path is None:
-                    latents = latents.to(weight_dtype)
+                # # encode pixel values with batch size of at most 8 to avoid OOM
+                # latents = []
+                # for i in range(0, pixel_values.shape[0], 8):
+                #     latents.append(pixel_values[i : i + 8])
+                # latents = torch.cat(latents, dim=0)
+                # latents = latents.to(weight_dtype)
 
                 # Sample noise that we'll add to the latents
-                noise = torch.randn_like(latents)
-                bsz = latents.shape[0]
+                # noise = torch.randn_like(latents)
+                # bsz = latents.shape[0]
 
-                # Cubic sampling to sample a random timestep for each image.
-                # For more details about why cubic sampling is used, refer to section 3.4 of https://arxiv.org/abs/2302.08453
-                timesteps = torch.rand((bsz,), device=latents.device)
-                timesteps = (1 - timesteps**3) * noise_scheduler.config.num_train_timesteps
-                timesteps = timesteps.long().to(noise_scheduler.timesteps.dtype)
-                timesteps = timesteps.clamp(0, noise_scheduler.config.num_train_timesteps - 1)
+                # # Cubic sampling to sample a random timestep for each image.
+                # # For more details about why cubic sampling is used, refer to section 3.4 of https://arxiv.org/abs/2302.08453
+                # timesteps = torch.rand((bsz,), device=latents.device)
+                # timesteps = (1 - timesteps**3) * noise_scheduler.config.num_train_timesteps
+                # timesteps = timesteps.long().to(noise_scheduler.timesteps.dtype)
+                # timesteps = timesteps.clamp(0, noise_scheduler.config.num_train_timesteps - 1)
 
-                # Add noise to the latents according to the noise magnitude at each timestep
-                # (this is the forward diffusion process)
-                noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+                # # Add noise to the latents according to the noise magnitude at each timestep
+                # # (this is the forward diffusion process)
+                # noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-                # Scale the noisy latents for the UNet
-                sigmas = get_sigmas(timesteps, len(noisy_latents.shape), noisy_latents.dtype)
-                inp_noisy_latents = noisy_latents / ((sigmas**2 + 1) ** 0.5)
+                # # Scale the noisy latents for the UNet
+                # sigmas = get_sigmas(timesteps, len(noisy_latents.shape), noisy_latents.dtype)
+                # inp_noisy_latents = noisy_latents / ((sigmas**2 + 1) ** 0.5)
 
                 # Adapter conditioning.
                 t2iadapter_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype)
+                # # pixel_values = pixel_values.squeeze(1)
+                # print("t2I image: ", t2iadapter_image.shape)
+                # print("clip image: ", clip_values.shape)
+                # print("target image: ", pixel_values.shape)
                 #print(t2iadapter_image.shape)
-                down_block_additional_residuals = t2iadapter(t2iadapter_image)
-                down_block_additional_residuals = [
-                    sample.to(dtype=weight_dtype) for sample in down_block_additional_residuals
-                ]
+
+                    
+                img_recon = []
+                sigmas = []
+                denoised_latents = []
+
+                for i in range(clip_values.shape[0]):
+                    adapter_vectors = t2iadapter_extn(t2iadapter_image[i])
+                    x, y, z = utils.unclip_recon(clip_values[i].unsqueeze(0),
+                                 diffusion_engine,
+                                 vector_suffix, adapter_vectors=adapter_vectors)
+                    print("sigma grad: ", y.requires_grad)
+                    print("denoised_latents grad: ", z.requires_grad)
+                    print("adapter_vectors grad: ", adapter_vectors[i].requires_grad)
+                    y = y.view(1,1,1)
+                    img_recon.append(x)
+                    sigmas.append(y)
+                    z = z.squeeze(0)
+                    denoised_latents.append(z)
+
+                img_recon = torch.stack(img_recon)
+                sigmas = torch.stack(sigmas)
+                # print("y sigma: ", sigmas.shape)
+                denoised_latents = torch.stack(denoised_latents)
 
                 # Predict the noise residual
-                model_pred = unet(
-                    inp_noisy_latents,
-                    timesteps,
-                    encoder_hidden_states=batch["prompt_ids"],
-                    added_cond_kwargs=batch["unet_added_conditions"],
-                    down_block_additional_residuals=down_block_additional_residuals,
-                ).sample
+                # model_pred = unet(
+                #     inp_noisy_latents,
+                #     timesteps,
+                #     encoder_hidden_states=batch["prompt_ids"],
+                #     added_cond_kwargs=batch["unet_added_conditions"],
+                #     down_block_additional_residuals=down_block_additional_residuals,
+                # ).sample
 
                 # Denoise the latents
-                denoised_latents = model_pred * (-sigmas) + noisy_latents
+                # denoised_latents = model_pred * (-sigmas) + noisy_latents
                 weighing = sigmas**-2.0
 
-                # Get the target for loss depending on the prediction type
-                if noise_scheduler.config.prediction_type == "epsilon":
-                    target = latents  # we are computing loss against denoise latents
-                elif noise_scheduler.config.prediction_type == "v_prediction":
-                    target = noise_scheduler.get_velocity(latents, noise, timesteps)
-                else:
-                    raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+                # # Get the target for loss depending on the prediction type
+                # if noise_scheduler.config.prediction_type == "epsilon":
+                target = diffusion_engine.encode_first_stage(pixel_values.float())
+                print("target grad: ", target.requires_grad)
+                target = target.to(weight_dtype)
+                # print("target: ", target.shape)
+                # print("denoised_latents: ", denoised_latents.shape)
+                # print("weighing: ", weighing.shape)
+                # elif noise_scheduler.config.prediction_type == "v_prediction":
+                #     target = noise_scheduler.get_velocity(latents, noise, timesteps)
+                # else:
+                #     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
                 # MSE loss
                 loss = torch.mean(
@@ -1256,9 +1132,11 @@ def main(args):
                 )
                 loss = loss.mean()
 
+                
+
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    params_to_clip = t2iadapter.parameters()
+                    params_to_clip = t2iadapter_extn.parameters()
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
@@ -1294,21 +1172,24 @@ def main(args):
                     accelerator.save_state(save_path)
                     logger.info(f"Saved state to {save_path}")
                     if len(os.listdir(args.output_dir)) > 1:
-                        upload_destination = os.path.join("users/mihirneal/checkpoints/color_t2i/", f"checkpoint-{global_step}")
-                        offload_to_s3(args, source_dir=save_path, bucket="proj-fmri", s3_path=upload_destination, global_step=global_step)
-
-                if args.validation_prompt is not None and global_step % args.validation_steps == 0:
+                        upload_destination = os.path.join("users/mihirneal/checkpoints/t2i_unclip_blur/", f"checkpoint-{global_step}")
+                        logger.info("upload ckpt")
+                        # offload_to_s3(args, source_dir=save_path, bucket="proj-fmri", s3_path=upload_destination, global_step=global_step)
+                
+                if args.validation_image is not None and global_step % args.validation_steps == 0:
+                    t2iadapter_extn.eval()
                     image_logs = log_validation(
-                        vae,
-                        unet,
-                        t2iadapter,
+                        diffusion_engine,
+                        t2iadapter_extn,
+                        clip_img_embedder,
+                        vector_suffix,
                         args,
                         accelerator,
                         weight_dtype,
                         global_step,
                     )
 
-            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            logs = {"loss": loss.detach().item()}
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
 
@@ -1318,27 +1199,9 @@ def main(args):
     # Create the pipeline using using the trained modules and save it.
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
-        t2iadapter = accelerator.unwrap_model(t2iadapter)
-        t2iadapter.save_pretrained(
-            args.output_dir,
-            is_main_process=accelerator.is_main_process,
-            save_function=accelerator.save,
-            state_dict=accelerator.get_state_dict(t2iadapter),
-            )
+        t2iadapter_extn = accelerator.unwrap_model(t2iadapter_extn)
+        torch.save(t2iadapter_extn, os.path.join(args.output_dir, "t2iextn_blur.pth"))
 
-        if args.push_to_hub:
-            save_model_card(
-                repo_id,
-                image_logs=image_logs,
-                base_model=args.pretrained_model_name_or_path,
-                repo_folder=args.output_dir,
-            )
-            upload_folder(
-                repo_id=repo_id,
-                folder_path=args.output_dir,
-                commit_message="End of training",
-                ignore_patterns=["step_*", "epoch_*"],
-            )
 
     accelerator.end_training()
 

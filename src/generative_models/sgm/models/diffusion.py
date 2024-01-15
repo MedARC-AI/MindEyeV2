@@ -12,7 +12,7 @@ from ..modules import UNCONDITIONAL_CONFIG
 from ..modules.autoencoding.temporal_ae import VideoDecoder
 from ..modules.diffusionmodules.wrappers import OPENAIUNETWRAPPER
 from ..modules.ema import LitEma
-from ..util import (default, disabled_train, get_obj_from_str,
+from ..util import (default, get_obj_from_str,
                     instantiate_from_config, log_txt_as_img)
 
 
@@ -103,10 +103,11 @@ class DiffusionEngine(pl.LightningModule):
             print(f"Unexpected Keys: {unexpected}")
 
     def _init_first_stage(self, config):
-        model = instantiate_from_config(config).eval()
-        model.train = disabled_train
+        model = instantiate_from_config(config)
+        model.train()
+        # model.train = disabled_train
         for param in model.parameters():
-            param.requires_grad = False
+            param.requires_grad = True
         self.first_stage_model = model
 
     def get_input(self, batch):
@@ -136,6 +137,9 @@ class DiffusionEngine(pl.LightningModule):
 
     @torch.no_grad()
     def encode_first_stage(self, x):
+        self.first_stage_model.train()
+        for i in self.first_stage_model.parameters():
+            i.requires_grad = True
         n_samples = default(self.en_and_decode_n_samples_a_time, x.shape[0])
         n_rounds = math.ceil(x.shape[0] / n_samples)
         all_out = []
@@ -340,6 +344,3 @@ class DiffusionEngine(pl.LightningModule):
             samples = self.decode_first_stage(samples)
             log["samples"] = samples
         return log
-
-    def t2i_unclip(self):
-        return self.model

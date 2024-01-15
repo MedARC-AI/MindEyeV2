@@ -11,10 +11,10 @@ from PIL import Image, ImageDraw, ImageFont
 from safetensors.torch import load_file as load_safetensors
 
 
-def disabled_train(self, mode=True):
-    """Overwrite model.train with this function to make sure train/eval mode
-    does not change anymore."""
-    return self
+# def disabled_train(self, mode=True):
+#     """Overwrite model.train with this function to make sure train/eval mode
+#     does not change anymore."""
+#     return self
 
 
 def get_string_from_tuple(s):
@@ -199,7 +199,7 @@ def append_dims(x, target_dims):
     return x[(...,) + (None,) * dims_to_append]
 
 
-def load_model_from_config(config, ckpt, verbose=True, freeze=True):
+def load_model_from_config(config, ckpt, verbose=True, freeze=False):
     print(f"Loading model from {ckpt}")
     if ckpt.endswith("ckpt"):
         pl_sd = torch.load(ckpt, map_location="cpu")
@@ -224,9 +224,9 @@ def load_model_from_config(config, ckpt, verbose=True, freeze=True):
 
     if freeze:
         for param in model.parameters():
-            param.requires_grad = False
+            param.requires_grad = True
 
-    model.eval()
+    model.train()
     return model
 
 
