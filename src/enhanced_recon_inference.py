@@ -96,11 +96,11 @@ clip_img_embedder.to(device)
 clip_seq_dim = 256
 clip_emb_dim = 1664
 
-all_images = torch.load(f"evals/subj0{subj}_all_images.pt")
-all_recons = torch.load(f"evals/{model_name}/{model_name}_all_recons.pt")
-all_clipvoxels = torch.load(f"evals/{model_name}/{model_name}_all_clipvoxels.pt")
-all_blurryrecons = torch.load(f"evals/{model_name}/{model_name}_all_blurryrecons.pt")
-all_predcaptions = torch.load(f"evals/{model_name}/{model_name}_all_predcaptions.pt")
+all_images = torch.load(f"evals/all_images.pt")
+all_recons = torch.load(f"evals/{model_name}/subj0{subj}_{model_name}_all_recons.pt")
+all_clipvoxels = torch.load(f"evals/{model_name}/subj0{subj}_{model_name}_all_clipvoxels.pt")
+all_blurryrecons = torch.load(f"evals/{model_name}/subj0{subj}_{model_name}_all_blurryrecons.pt")
+all_predcaptions = torch.load(f"evals/{model_name}/subj0{subj}_{model_name}_all_predcaptions.pt")
 
 all_recons = transforms.Resize((768,768))(all_recons).float()
 all_blurryrecons = transforms.Resize((768,768))(all_blurryrecons).float()
@@ -269,7 +269,7 @@ for img_idx in tqdm(range(len(all_recons))):
             all_enhancedrecons = torch.vstack((all_enhancedrecons, samples.cpu()[None]))
 
 print("all_enhancedrecons", all_enhancedrecons.shape)
-torch.save(all_enhancedrecons,f"evals/{model_name}/{model_name}_all_enhancedrecons.pt")
-print(f"saved evals/{model_name}/{model_name}_all_enhancedrecons.pt")
+torch.save(all_enhancedrecons,f"evals/{model_name}/subj0{subj}_{model_name}_all_enhancedrecons.pt")
+print(f"saved evals/{model_name}/subj0{subj}_{model_name}_all_enhancedrecons.pt")
 
 sys.exit(0)
