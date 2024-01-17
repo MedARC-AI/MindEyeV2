@@ -335,7 +335,7 @@ out_text_dim = clip_text_emb_dim
 depth = 3
 dim_head = 32
 heads = clip_text_emb_dim//32 # heads * dim_head = clip_emb_dim
-timesteps = 50
+timesteps = 100
 git_prior_network = VersatileDiffusionPriorNetwork(
         dim=out_text_dim,
         depth=depth,
@@ -534,10 +534,10 @@ if blurry_recon:
 print(all_recons.shape)
 # torch.save(all_images,"evals/all_images.pt")
 if blurry_recon: 
-    torch.save(all_blurryrecons,f"evals/{model_name}/{model_name}_all_blurryrecons.pt")
-torch.save(all_recons,f"evals/{model_name}/{model_name}_all_recons.pt")
-torch.save(all_predcaptions,f"evals/{model_name}/{model_name}_all_predcaptions.pt")
-torch.save(all_clipvoxels,f"evals/{model_name}/{model_name}_all_clipvoxels.pt")
+    torch.save(all_blurryrecons,f"evals/{model_name}/subj0{subj}_{model_name}_all_blurryrecons.pt")
+torch.save(all_recons,f"evals/{model_name}/subj0{subj}_{model_name}_all_recons.pt")
+torch.save(all_predcaptions,f"evals/{model_name}/subj0{subj}_{model_name}_all_predcaptions.pt")
+torch.save(all_clipvoxels,f"evals/{model_name}/subj0{subj}_{model_name}_all_clipvoxels.pt")
 print(f"saved {model_name} outputs!")
 
 sys.exit(0)

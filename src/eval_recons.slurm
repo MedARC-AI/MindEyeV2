@@ -14,6 +14,6 @@
 source ~/.bashrc
 cd /weka/proj-fmri/paulscotti/MindEyeV2/src
 
-srun python eval_recons.py --model_name=git_tong_unCLIP_150ep_4block_hid4096_bs40 --subj=1 --n_blocks=4 --hidden_dim=4096
+srun python recon_inference.py --model_name=git_tong_unCLIP_150ep_4block_hid4096_bs40 --subj=1 --n_blocks=4 --hidden_dim=4096
 
-srun python eval_enhanced_recons.py --model_name=git_tong_unCLIP_150ep_4block_hid4096_bs40 --subj=1
+srun python enhanced_recon_inference.py --model_name=git_tong_unCLIP_150ep_4block_hid4096_bs40 --subj=1
