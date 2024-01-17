@@ -178,7 +178,7 @@ all_enhancedrecons = None
 plotting=False
 
 num_samples = 1
-img2img_timepoint = 16 # 16 # higher number means more reliance on prompt, less reliance on matching the conditioning image
+img2img_timepoint = 11 # 11 # higher number means more reliance on prompt, less reliance on matching the conditioning image
 base_engine.sampler.guider.scale = 10 # 10 # cfg
 def denoiser(x, sigma, c): return base_engine.denoiser(base_engine.model, x, sigma, c)
 
