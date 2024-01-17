@@ -1,0 +1,36 @@
+{
+  "_class_name": "VersatileDiffusionPipeline",
+  "_diffusers_version": "0.8.0.dev0",
+  "image_encoder": [
+    "transformers",
+    "CLIPVisionModelWithProjection"
+  ],
+  "image_feature_extractor": [
+    "transformers",
+    "CLIPImageProcessor"
+  ],
+  "image_unet": [
+    "diffusers",
+    "UNet2DConditionModel"
+  ],
+  "scheduler": [
+    "diffusers",
+    "DDIMScheduler"
+  ],
+  "text_encoder": [
+    "transformers",
+    "CLIPTextModelWithProjection"
+  ],
+  "text_unet": [
+    "versatile_diffusion",
+    "UNetFlatConditionModel"
+  ],
+  "tokenizer": [
+    "transformers",
+    "CLIPTokenizer"
+  ],
+  "vae": [
+    "diffusers",
+    "AutoencoderKL"
+  ]
+}
