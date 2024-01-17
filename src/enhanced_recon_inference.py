@@ -179,7 +179,7 @@ plotting=False
 
 num_samples = 1
 img2img_timepoint = 8 # 8 # higher number means more reliance on prompt, less reliance on matching the conditioning image
-base_engine.sampler.guider.scale = 10 # 10 # cfg
+base_engine.sampler.guider.scale = 5 # 5 # cfg
 def denoiser(x, sigma, c): return base_engine.denoiser(base_engine.model, x, sigma, c)
 
 for img_idx in tqdm(range(len(all_recons))):
