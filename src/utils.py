@@ -134,6 +134,13 @@ def gather_features(image_features, voxel_features, accelerator):
         return all_image_features, all_voxel_features
     return all_image_features
 
+def gather_features_old(image_features, voxel_features):  
+    all_image_features = torch.cat(torch.distributed.nn.all_gather(image_features), dim=0)
+    if voxel_features is not None:
+        all_voxel_features = torch.cat(torch.distributed.nn.all_gather(voxel_features), dim=0)
+        return all_image_features, all_voxel_features
+    return all_image_features
+
 def soft_clip_loss(preds, targs, temp=0.125): #, distributed=False, accelerator=None):
     # if not distributed:
     clip_clip = (targs @ targs.T)/temp
@@ -145,6 +152,27 @@ def soft_clip_loss(preds, targs, temp=0.125): #, distributed=False, accelerator=
     
     loss1 = -(brain_clip.log_softmax(-1) * clip_clip.softmax(-1)).sum(-1).mean()
     loss2 = -(brain_clip.T.log_softmax(-1) * clip_clip.softmax(-1)).sum(-1).mean()
+    
+    loss = (loss1 + loss2)/2
+    return loss
+
+def soft_cont_loss(student_preds, teacher_preds, teacher_aug_preds, temp=0.125, distributed=True):
+    if not distributed:
+        teacher_teacher_aug = (teacher_preds @ teacher_aug_preds.T)/temp
+        teacher_teacher_aug_t = (teacher_aug_preds @ teacher_preds.T)/temp
+        student_teacher_aug = (student_preds @ teacher_aug_preds.T)/temp
+        student_teacher_aug_t = (teacher_aug_preds @ student_preds.T)/temp
+    else:
+        all_student_preds, all_teacher_preds = gather_features_old(student_preds, teacher_preds)
+        all_teacher_aug_preds = gather_features_old(teacher_aug_preds, None)
+
+        teacher_teacher_aug = (teacher_preds @ all_teacher_aug_preds.T)/temp
+        teacher_teacher_aug_t = (teacher_aug_preds @ all_teacher_preds.T)/temp
+        student_teacher_aug = (student_preds @ all_teacher_aug_preds.T)/temp
+        student_teacher_aug_t = (teacher_aug_preds @ all_student_preds.T)/temp
+    
+    loss1 = -(student_teacher_aug.log_softmax(-1) * teacher_teacher_aug.softmax(-1)).sum(-1).mean()
+    loss2 = -(student_teacher_aug_t.log_softmax(-1) * teacher_teacher_aug_t.softmax(-1)).sum(-1).mean()
     
     loss = (loss1 + loss2)/2
     return loss
