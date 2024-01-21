@@ -64,7 +64,7 @@ class Clipper(torch.nn.Module):
             # from transformers import CLIPVisionModelWithProjection
             # image_encoder = CLIPVisionModelWithProjection.from_pretrained("openai/clip-vit-large-patch14",cache_dir="/fsx/proj-medarc/fmri/cache")
             from transformers import CLIPVisionModelWithProjection
-            sd_cache_dir = '/fsx/proj-fmri/shared/cache/models--shi-labs--versatile-diffusion/snapshots/2926f8e11ea526b562cd592b099fcf9c2985d0b7'
+            sd_cache_dir = '/weka/proj-fmri/shared/cache/models--shi-labs--versatile-diffusion/snapshots/2926f8e11ea526b562cd592b099fcf9c2985d0b7'
             image_encoder = CLIPVisionModelWithProjection.from_pretrained(sd_cache_dir, subfolder='image_encoder').eval()
             image_encoder = image_encoder.to(device)
             for param in image_encoder.parameters():

@@ -156,7 +156,7 @@ def soft_clip_loss(preds, targs, temp=0.125): #, distributed=False, accelerator=
     loss = (loss1 + loss2)/2
     return loss
 
-def soft_cont_loss(student_preds, teacher_preds, teacher_aug_preds, temp=0.125, distributed=True):
+def soft_cont_loss(student_preds, teacher_preds, teacher_aug_preds, temp=0.125, distributed=False):
     if not distributed:
         teacher_teacher_aug = (teacher_preds @ teacher_aug_preds.T)/temp
         teacher_teacher_aug_t = (teacher_aug_preds @ teacher_preds.T)/temp
