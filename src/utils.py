@@ -450,3 +450,15 @@ def iterate_range(start, length, batchsize):
 # Torch fwRF
 def get_value(_x):
     return np.copy(_x.data.cpu().numpy())
+
+def soft_cont_loss(student_preds, teacher_preds, teacher_aug_preds, temp=0.125):
+    teacher_teacher_aug = (teacher_preds @ teacher_aug_preds.T)/temp
+    teacher_teacher_aug_t = (teacher_aug_preds @ teacher_preds.T)/temp
+    student_teacher_aug = (student_preds @ teacher_aug_preds.T)/temp
+    student_teacher_aug_t = (teacher_aug_preds @ student_preds.T)/temp
+
+    loss1 = -(student_teacher_aug.log_softmax(-1) * teacher_teacher_aug.softmax(-1)).sum(-1).mean()
+    loss2 = -(student_teacher_aug_t.log_softmax(-1) * teacher_teacher_aug_t.softmax(-1)).sum(-1).mean()
+    
+    loss = (loss1 + loss2)/2
+    return loss
