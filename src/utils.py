@@ -468,6 +468,7 @@ def iterate_range(start, length, batchsize):
 def get_value(_x):
     return np.copy(_x.data.cpu().numpy())
 
+<<<<<<< HEAD
 def create_grid(images, rows=None, cols=None):
     if rows is None or cols is None:
         grid_size = math.ceil(math.sqrt(len(images)))  # Calculate grid size
@@ -758,3 +759,16 @@ def reconstruction(
             ax[i].imshow(torch_to_Image(recon))
 
     return fig, brain_recons, best_picks, recon_img
+=======
+def soft_cont_loss(student_preds, teacher_preds, teacher_aug_preds, temp=0.125):
+    teacher_teacher_aug = (teacher_preds @ teacher_aug_preds.T)/temp
+    teacher_teacher_aug_t = (teacher_aug_preds @ teacher_preds.T)/temp
+    student_teacher_aug = (student_preds @ teacher_aug_preds.T)/temp
+    student_teacher_aug_t = (teacher_aug_preds @ student_preds.T)/temp
+
+    loss1 = -(student_teacher_aug.log_softmax(-1) * teacher_teacher_aug.softmax(-1)).sum(-1).mean()
+    loss2 = -(student_teacher_aug_t.log_softmax(-1) * teacher_teacher_aug_t.softmax(-1)).sum(-1).mean()
+    
+    loss = (loss1 + loss2)/2
+    return loss
+>>>>>>> 9a21222bbd35e834ac8edf8dcdbbfd5d75a3e77d

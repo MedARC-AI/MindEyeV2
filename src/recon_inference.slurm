@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --account=topfmri
 #SBATCH --partition=a80
-#SBATCH --job-name=eye
+#SBATCH --job-name=eyeinference
 #SBATCH --nodes=1              
 #SBATCH --ntasks-per-node=1     # should = number of gpus
 #SBATCH --gres=gpu:1
@@ -14,6 +14,9 @@
 source ~/.bashrc
 cd /weka/proj-fmri/paulscotti/MindEyeV2/src
 
-srun python recon_inference.py --model_name=git_tong_unCLIP_150ep_4block_hid4096_bs40 --subj=1 --n_blocks=4 --hidden_dim=4096
+jupyter nbconvert recon_inference.ipynb --to python
+jupyter nbconvert enhanced_recon_inference.ipynb --to python
 
-srun python enhanced_recon_inference.py --model_name=git_tong_unCLIP_150ep_4block_hid4096_bs40 --subj=1
+model_name="final_subj01_notpretrained_1sess_24bs"
+
+srun python recon_inference.py --model_name=${model_name} --subj=1 --n_blocks=4 --hidden_dim=4096 && python enhanced_recon_inference.py --model_name=${model_name} --subj=1
