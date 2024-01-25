@@ -5,9 +5,13 @@ set -e
 
 pip install --upgrade pip
 
-python3.11 -m venv fmri
-source fmri/bin/activate
+python3 -m venv mindeyev2
+source mindeyev2/bin/activate
 
-pip install numpy matplotlib tqdm scikit-image jupyterlab accelerate webdataset clip pandas matplotlib ftfy regex kornia umap-learn h5py torchvision torch==2.0.1 diffusers deepspeed omegaconf pytorch-lightning==2.0.1
+pip install numpy matplotlib tqdm scikit-image jupyterlab accelerate transformers xformers webdataset einops clip pandas matplotlib ftfy regex kornia umap-learn h5py torchvision torch==2.0.1 diffusers deepspeed omegaconf pytorch-lightning==2.0.1 dalle2_pytorch
 
 pip install git+https://github.com/openai/CLIP.git --no-deps
+
+pip install git+https://github.com/mlfoundations/open_clip.git --no-deps
+
+

@@ -1,7 +1,8 @@
 wandb/
 train_logs/
 slurms/
-
+results/
+src/evals/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -24,6 +25,8 @@ parts/
 sdist/
 var/
 wheels/
+cache/
+dataset/
 share/python-wheels/
 *.egg-info/
 .installed.cfg
@@ -156,6 +159,12 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
+# data files
+*.pt
+*.hdf5
+src/evals/
+*.csv
+*.png
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore

@@ -1,0 +1,72 @@
+name: mindeyev2-cuda
+# channels:
+#   - conda-forge
+#   - nvidia
+#   - pytorch
+#   - defaults
+# dependencies:
+#   - python=3.10
+#   - pip
+#   - pytorch::pytorch==2.0.0
+#   - pytorch::torchvision
+#   - pytorch-cuda=11.7
+#   - pip:
+#       - setuptools==58
+#       - huggingface-hub==0.13.3
+#       - pyyaml==6.0
+#       - accelerate==0.18.0
+#       - xformers==0.0.18
+#       - h5py==3.8.0
+#       - easydict==1.10
+#       - scikit-image==0.20.0
+#       - einops==0.6.0
+#       - omegaconf==2.3.0
+#       - ipython==8.12.0
+#       - ipykernel==6.22.0
+#       - matplotlib==3.7.1
+#       - nibabel==5.1.0
+#       - numpy==1.24.1
+#       - opencv-python==4.7.0.72
+#       - pandas==1.5.3
+#       - pillow==9.5.0
+#       - pycocotools==2.0.6
+#       - torchmetrics==1.2.0
+#       - tqdm==4.65.0
+#       - transformers==4.27.4
+#       - wandb==0.14.0
+#       - seaborn==0.12.2
+#       - webdataset==0.2.48
+#       - scikit-learn==1.3.0
+#       - argparse==1.4.0
+#       - wget==3.2
+channels:
+  - conda-forge
+  - nvidia
+  - pytorch
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pytorch::pytorch==2.0.1
+  - pytorch::torchvision
+  - pip:
+      - numpy 
+      - matplotlib
+      - tqdm
+      - scikit-image
+      - jupyterlab
+      - accelerate
+      - webdataset
+      - clip
+      - pandas
+      - matplotlib
+      - ftfy
+      - regex
+      - kornia
+      - umap-learn
+      - h5py
+      - diffusers
+      - deepspeed
+      - omegaconf
+      - pytorch-lightning==2.0.0
+      - "--editable=git+https://github.com/openai/CLIP.git --no-deps"
