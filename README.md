@@ -1,4 +1,4 @@
-# MindEyeV2
+# MindEye2
 
 1. Download relevant parts of https://huggingface.co/datasets/pscotti/mindeyev2 and place them in a folder. You will need to specify the path to this folder as "data_path" variable.
 
