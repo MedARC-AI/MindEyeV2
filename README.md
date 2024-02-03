@@ -35,3 +35,4 @@ hf_hub_download(repo_id="pscotti/mindeyev2", filename="coco_images_224_float16.h
     - To fine-tune from a multi-subject model, set ```--no-multi_subject``` and set ```--multisubject_ckpt=path_to_your_pretrained_ckpt_folder```
 - ```src/recon_inference.ipynb``` will run inference on a pretrained model, outputting tensors of reconstructions/predicted captions/etc.
 - ```src/final_evaluations.ipynb``` will visualize reconstructions output from ```src/recon_inference`` and compute quantitative metrics.
+- See .slurm files for example scripts for running the .ipynb notebooks as batch jobs submitted to Slurm job scheduling.
