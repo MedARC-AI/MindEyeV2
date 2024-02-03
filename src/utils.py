@@ -7,17 +7,12 @@ import PIL
 import random
 import os
 import matplotlib.pyplot as plt
-import pandas as pd
 import math
 import webdataset as wds
-import tempfile
-from torchvision.utils import make_grid
 
 import json
-from torchmetrics.image.fid import FrechetInceptionDistance
 from PIL import Image
 import requests
-import io
 import time 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -65,14 +60,6 @@ def torch_to_matplotlib(x,device=device):
         return x[0]
     else:
         return x.cpu().numpy()[0]
-
-def pairwise_cosine_similarity(A, B, dim=1, eps=1e-8):
-    #https://stackoverflow.com/questions/67199317/pytorch-cosine-similarity-nxn-elements
-    numerator = A @ B.T
-    A_l2 = torch.mul(A, A).sum(axis=dim)
-    B_l2 = torch.mul(B, B).sum(axis=dim)
-    denominator = torch.max(torch.sqrt(torch.outer(A_l2, B_l2)), torch.tensor(eps))
-    return torch.div(numerator, denominator)
 
 def batchwise_pearson_correlation(Z, B):
     # Calculate means
@@ -134,15 +121,9 @@ def gather_features(image_features, voxel_features, accelerator):
         return all_image_features, all_voxel_features
     return all_image_features
 
-def soft_clip_loss(preds, targs, temp=0.125): #, distributed=False, accelerator=None):
-    # if not distributed:
+def soft_clip_loss(preds, targs, temp=0.125):
     clip_clip = (targs @ targs.T)/temp
     brain_clip = (preds @ targs.T)/temp
-    # else:
-    #     all_targs = gather_features(targs, None, accelerator)
-    #     clip_clip = (targs @ all_targs.T)/temp
-    #     brain_clip = (preds @ all_targs.T)/temp
-    
     loss1 = -(brain_clip.log_softmax(-1) * clip_clip.softmax(-1)).sum(-1).mean()
     loss2 = -(brain_clip.T.log_softmax(-1) * clip_clip.softmax(-1)).sum(-1).mean()
     
@@ -221,13 +202,6 @@ def count_params(model):
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('param counts:\n{:,} total\n{:,} trainable'.format(total, trainable))
     return trainable
-
-def image_grid(imgs, rows, cols):
-    w, h = imgs[0].size
-    grid = PIL.Image.new('RGB', size=(cols*w, rows*h))
-    for i, img in enumerate(imgs):
-        grid.paste(img, box=(i%cols*w, i//cols*h))
-    return grid
     
 def check_loss(loss):
     if loss.isnan().any():
@@ -239,86 +213,6 @@ def cosine_anneal(start, end, steps):
 def resize(img, img_size=128):
     if img.ndim == 3: img = img[None]
     return nn.functional.interpolate(img, size=(img_size, img_size), mode='nearest')
-
-import braceexpand
-def get_dataloaders(
-    batch_size,
-    image_var='images',
-    num_devices=None,
-    num_workers=None,
-    train_url=None,
-    val_url=None,
-    meta_url=None,
-    num_train=None,
-    num_val=None,
-    cache_dir="/scratch/tmp/wds-cache",
-    seed=0,
-    voxels_key="nsdgeneral.npy",
-    val_batch_size=None,
-    to_tuple=["voxels", "images", "trial"],
-    local_rank=0,
-    world_size=1,
-):
-    print("Getting dataloaders...")
-    assert image_var == 'images'
-    
-    def my_split_by_node(urls):
-        return urls
-    
-    train_url = list(braceexpand.braceexpand(train_url))
-    val_url = list(braceexpand.braceexpand(val_url))
-
-    if num_devices is None:
-        num_devices = torch.cuda.device_count()
-    
-    if num_workers is None:
-        num_workers = num_devices
-    
-    if num_train is None:
-        metadata = json.load(open(meta_url))
-        num_train = metadata['totals']['train']
-    if num_val is None:
-        metadata = json.load(open(meta_url))
-        num_val = metadata['totals']['val']
-
-    if val_batch_size is None:
-        val_batch_size = batch_size
-        
-    global_batch_size = batch_size * num_devices
-    num_batches = math.floor(num_train / global_batch_size)
-    num_worker_batches = math.floor(num_batches / num_workers)
-    if num_worker_batches == 0: num_worker_batches = 1
-    
-    print("\nnum_train",num_train)
-    print("global_batch_size",global_batch_size)
-    print("batch_size",batch_size)
-    print("num_workers",num_workers)
-    print("num_batches",num_batches)
-    print("num_worker_batches", num_worker_batches)
-    
-    # train_url = train_url[local_rank:world_size]
-    train_data = wds.WebDataset(train_url, resampled=False, cache_dir=cache_dir, nodesplitter=my_split_by_node)\
-        .shuffle(500, initial=500, rng=random.Random(42))\
-        .decode("torch")\
-        .rename(images="jpg;png", voxels=voxels_key, trial="trial.npy", coco="coco73k.npy", reps="num_uniques.npy")\
-        .to_tuple(*to_tuple)#\
-        # .batched(batch_size, partial=True)#\
-        # .with_epoch(num_worker_batches)
-    
-    # BATCH SIZE SHOULD BE NONE!!! FOR TRAIN AND VAL | resampled=True for train | .batched(val_batch_size, partial=False)
-    train_dl = torch.utils.data.DataLoader(train_data, batch_size=batch_size, num_workers=1, shuffle=False)
-
-    # Validation 
-    print("val_batch_size",val_batch_size)
-    val_data = wds.WebDataset(val_url, resampled=False, cache_dir=cache_dir, nodesplitter=my_split_by_node)\
-        .shuffle(500, initial=500, rng=random.Random(42))\
-        .decode("torch")\
-        .rename(images="jpg;png", voxels=voxels_key, trial="trial.npy", coco="coco73k.npy", reps="num_uniques.npy")\
-        .to_tuple(*to_tuple)#\
-        # .batched(val_batch_size, partial=True)
-    val_dl = torch.utils.data.DataLoader(val_data, batch_size=val_batch_size, num_workers=1, shuffle=False, drop_last=True)
-
-    return train_dl, val_dl, num_train, num_val
 
 pixcorr_preprocess = transforms.Compose([
     transforms.Resize(425, interpolation=transforms.InterpolationMode.BILINEAR),
@@ -355,39 +249,6 @@ def select_annotations(annots, random=True):
             txt = np.vstack((txt, t))
     txt = txt.flatten()
     return txt
-
-def add_saturation(image, alpha=2):
-    gray_image = 0.2989 * image[:, 0, :, :] + 0.5870 * image[:, 1, :, :] + 0.1140 * image[:, 2, :, :]
-    gray_image = gray_image.unsqueeze(1).expand_as(image)
-    saturated_image = alpha * image + (1 - alpha) * gray_image
-    return torch.clamp(saturated_image, 0, 1)
-
-def find_prompt_by_image_number(image_number, data):
-    target_image_filename = f"img_t{image_number}.jpg"
-    for entry in data:
-        if 'target' in entry and entry['target'].endswith(target_image_filename):
-            return entry['prompt']
-    return -1
-
-def compute_negative_l1_losses(preds, targets):
-    batch_size = preds.size(0)
-    
-    # Expand dimensions for broadcasting
-    expanded_preds = preds.unsqueeze(1)        # Shape: [batch_size, 1, 100]
-    expanded_targets = targets.unsqueeze(0)    # Shape: [1, batch_size, 100]
-    
-    # Compute pairwise L1 differences
-    l1_diffs = torch.abs(expanded_preds - expanded_targets)  # Shape: [batch_size, batch_size, 100]
-    
-    # Mask the diagonal to exclude positive pairs
-    mask = torch.eye(batch_size).bool().to(l1_diffs.device)
-    l1_diffs[mask] = 0
-    
-    # Sum L1 differences for each sample against all negatives
-    negative_losses = l1_diffs.sum(dim=-1).mean()
-    
-    return negative_losses
-
 
 from generative_models.sgm.util import append_dims
 def unclip_recon(x, diffusion_engine, vector_suffix,
@@ -432,12 +293,6 @@ def unclip_recon(x, diffusion_engine, vector_suffix,
         # samples = torch.clamp((samples_x + .5) / 2.0, min=0.0, max=1.0)
         return samples
 
-def process_image(imageArray, x=768, y=768):
-    imageArray = imageArray.cpu().numpy().astype(np.uint8)
-    image = Image.fromarray(imageArray)
-    image = image.resize((x, y), resample=Image.Resampling.LANCZOS)
-    return image
-
 #  Numpy Utility 
 def iterate_range(start, length, batchsize):
     batch_count = int(length // batchsize )
@@ -462,3 +317,8 @@ def soft_cont_loss(student_preds, teacher_preds, teacher_aug_preds, temp=0.125):
     
     loss = (loss1 + loss2)/2
     return loss
+
+def ddp(model):
+    if isinstance(model, torch.nn.parallel.DistributedDataParallel):
+        return model.module
+    return model

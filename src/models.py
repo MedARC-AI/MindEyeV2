@@ -5,53 +5,118 @@ import torch
 import torch.nn as nn
 import PIL
 import clip
-import open_clip
 from functools import partial
 import random
 import json
 from tqdm import tqdm
 import utils
 
-# class BrainMLP(nn.Module):
-#     def __init__(self, out_dim=257*768, in_dim=15724, clip_size=768, h=4096):
-#         super().__init__()
-#         self.lin0 = nn.Sequential(
-#             nn.Linear(in_dim, h, bias=False),
-#             nn.LayerNorm(h),
-#             nn.GELU(inplace=True),
-#             nn.Dropout(0.5))
-#         self.mlp = nn.ModuleList([
-#             nn.Sequential(
-#                 nn.Linear(h, h),
-#                 nn.LayerNorm(h),
-#                 nn.GELU(inplace=True),
-#                 nn.Dropout(0.15)
-#             ) for _ in range(4)])
-#         self.lin1 = nn.Linear(h, out_dim, bias=True)
-#         self.proj = nn.Sequential(
-#             nn.LayerNorm(clip_size),
-#             nn.GELU(),
-#             nn.Linear(clip_size, 2048),
-#             nn.LayerNorm(2048),
-#             nn.GELU(),
-#             nn.Linear(2048, 2048),
-#             nn.LayerNorm(2048),
-#             nn.GELU(),
-#             nn.Linear(2048, clip_size))
-#     def forward(self, x):
-#         x = self.lin0(x)
-#         residual = x
-#         for res_block in range(self.n_blocks):
-#             x = self.mlp[res_block](x)
-#             x += residual
-#             residual = x
-#         diffusion_prior_input = self.lin1(x.reshape(len(x), -1))
-#         disjointed_clip_fmri = self.proj(diffusion_prior_input.reshape(
-#                                         len(x),-1, self.clip_size))
-#         return diffusion_prior_input, disjointed_clip_fmri
+from diffusers.models.vae import Decoder
+class BrainNetwork(nn.Module):
+    def __init__(self, h=4096, in_dim=15724, out_dim=768, seq_len=2, n_blocks=4, drop=.15, clip_size=768, blurry_recon=True, clip_scale=1):
+        super().__init__()
+        self.seq_len = seq_len
+        self.h = h
+        self.clip_size = clip_size
+        self.blurry_recon = blurry_recon
+        self.clip_scale = clip_scale
+        self.mixer_blocks1 = nn.ModuleList([
+            self.mixer_block1(h, drop) for _ in range(n_blocks)
+        ])
+        self.mixer_blocks2 = nn.ModuleList([
+            self.mixer_block2(seq_len, drop) for _ in range(n_blocks)
+        ])
+        
+        # Output linear layer
+        self.backbone_linear = nn.Linear(h * seq_len, out_dim, bias=True) 
+        self.clip_proj = self.projector(clip_size, clip_size, h=clip_size)
+        
+        if self.blurry_recon:
+            self.blin1 = nn.Linear(h*seq_len,4*28*28,bias=True)
+            self.bdropout = nn.Dropout(.3)
+            self.bnorm = nn.GroupNorm(1, 64)
+            self.bupsampler = Decoder(
+                in_channels=64,
+                out_channels=4,
+                up_block_types=["UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D"],
+                block_out_channels=[32, 64, 128],
+                layers_per_block=1,
+            )
+            self.b_maps_projector = nn.Sequential(
+                nn.Conv2d(64, 512, 1, bias=False),
+                nn.GroupNorm(1,512),
+                nn.ReLU(True),
+                nn.Conv2d(512, 512, 1, bias=False),
+                nn.GroupNorm(1,512),
+                nn.ReLU(True),
+                nn.Conv2d(512, 512, 1, bias=True),
+            )
+            
+    def projector(self, in_dim, out_dim, h=2048):
+        return nn.Sequential(
+            nn.LayerNorm(in_dim),
+            nn.GELU(),
+            nn.Linear(in_dim, h),
+            nn.LayerNorm(h),
+            nn.GELU(),
+            nn.Linear(h, h),
+            nn.LayerNorm(h),
+            nn.GELU(),
+            nn.Linear(h, out_dim)
+        )
+    
+    def mlp(self, in_dim, out_dim, drop):
+        return nn.Sequential(
+            nn.Linear(in_dim, out_dim),
+            nn.GELU(),
+            nn.Dropout(drop),
+            nn.Linear(out_dim, out_dim),
+        )
+    
+    def mixer_block1(self, h, drop):
+        return nn.Sequential(
+            nn.LayerNorm(h),
+            self.mlp(h, h, drop),  # Token mixing
+        )
 
+    def mixer_block2(self, seq_len, drop):
+        return nn.Sequential(
+            nn.LayerNorm(seq_len),
+            self.mlp(seq_len, seq_len, drop)  # Channel mixing
+        )
+        
+    def forward(self, x):
+        # make empty tensors
+        c,b = torch.Tensor([0.]), torch.Tensor([[0.],[0.]])
+        
+        # Mixer blocks
+        residual1 = x
+        residual2 = x.permute(0,2,1)
+        for block1, block2 in zip(self.mixer_blocks1,self.mixer_blocks2):
+            x = block1(x) + residual1
+            residual1 = x
+            x = x.permute(0,2,1)
+            
+            x = block2(x) + residual2
+            residual2 = x
+            x = x.permute(0,2,1)
+            
+        x = x.reshape(x.size(0), -1)
+        backbone = self.backbone_linear(x).reshape(len(x), -1, self.clip_size)
+        if self.clip_scale>0:
+            c = self.clip_proj(backbone)
 
-
+        if self.blurry_recon:
+            b = self.blin1(x)
+            b = self.bdropout(b)
+            b = b.reshape(b.shape[0], -1, 7, 7).contiguous()
+            b = self.bnorm(b)
+            b_aux = self.b_maps_projector(b).flatten(2).permute(0,2,1)
+            b_aux = b_aux.view(len(b_aux), 49, 512)
+            b = (self.bupsampler(b), b_aux)
+        
+        return backbone, c, b
+    
 class Clipper(torch.nn.Module):
     def __init__(self, clip_variant, clamp_embs=False, norm_embs=False,
                  hidden_state=False, device=torch.device('cpu')):
@@ -160,7 +225,6 @@ from dalle2_pytorch.dalle2_pytorch import l2norm, default, exists
 from dalle2_pytorch.train_configs import DiffusionPriorNetworkConfig
 # vd prior
 from dalle2_pytorch.dalle2_pytorch import RotaryEmbedding, CausalTransformer, SinusoidalPosEmb, MLP, Rearrange, repeat, rearrange, prob_mask_like, LayerNorm, RelPosBias, Attention, FeedForward
-
 
 class BrainDiffusionPrior(DiffusionPrior):
     """ 
@@ -321,8 +385,7 @@ class BrainDiffusionPrior(DiffusionPrior):
         # undo the scaling so we can directly use it for real mse loss and reconstruction
         return loss, pred
 
-    
-class VersatileDiffusionPriorNetwork(nn.Module):
+class PriorNetwork(nn.Module):
     def __init__(
         self,
         dim,
