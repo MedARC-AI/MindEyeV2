@@ -33,5 +33,5 @@ hf_hub_download(repo_id="pscotti/mindeyev2", filename="coco_images_224_float16.h
     - To train a single-subject model, set ```--no-multi_subject```
     - To train a multi-subject model (i.e., pretraining), set ```--multi_subject``` and set ```--subj=#``` where # is the one subject out of 8 NSD subjects to **not** include in the pretraining.
     - To fine-tune from a multi-subject model, set ```--no-multi_subject``` and set ```--multisubject_ckpt=path_to_your_pretrained_ckpt_folder```
-- ```src/recon_inference.ipynb`` will run inference on a pretrained model, outputting tensors of reconstructions/predicted captions/etc.
+- ```src/recon_inference.ipynb``` will run inference on a pretrained model, outputting tensors of reconstructions/predicted captions/etc.
 - ```src/final_evaluations.ipynb``` will visualize reconstructions output from ```src/recon_inference`` and compute quantitative metrics.
