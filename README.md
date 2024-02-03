@@ -28,10 +28,10 @@ hf_hub_download(repo_id="pscotti/mindeyev2", filename="coco_images_224_float16.h
 
 ## Usage
 
-- ```src/Train.ipynb``` trains models (both single-subject and multi-subject). Check the argparser arguments to specify how you want to train the model.
+- ```src/Train.ipynb``` trains models (both single-subject and multi-subject). Check the argparser arguments to specify how you want to train the model (e.g., ```--num_sessions=10``` to train with 1-hour of data).
     - Final models used in the paper were trained on an 8xA100 80GB node and will OOM on weaker compute. You can train the model on weaker compute with minimal performance impact by changing certain model arguments: We recommend lowering hidden_dim to 1024 (or even 512), removing the low-level submodule (``--no-blurry_recons``), and lowering the batch size.
-    - To train a single-subject model, set ```--no-multi_subject```
-    - To train a multi-subject model (i.e., pretraining), set ```--multi_subject``` and set ```--subj=#``` where # is the one subject out of 8 NSD subjects to **not** include in the pretraining.
+    - To train a single-subject model, set ```--no-multi_subject``` and ```--subj=#``` where # is the subject from NSD you wish to train
+    - To train a multi-subject model (i.e., pretraining), set ```--multi_subject``` and ```--subj=#``` where # is the one subject out of 8 NSD subjects to **not** include in the pretraining.
     - To fine-tune from a multi-subject model, set ```--no-multi_subject``` and set ```--multisubject_ckpt=path_to_your_pretrained_ckpt_folder```
 - ```src/recon_inference.ipynb``` will run inference on a pretrained model, outputting tensors of reconstructions/predicted captions/etc.
 - ```src/final_evaluations.ipynb``` will visualize reconstructions output from ```src/recon_inference`` and compute quantitative metrics.
