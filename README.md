@@ -24,7 +24,7 @@ snapshot_download(repo_id="pscotti/mindeyev2", repo_type = "dataset", revision="
 hf_hub_download(repo_id="pscotti/mindeyev2", filename="coco_images_224_float16.hdf5", repo_type="dataset")
 ```
 
-3. Run setup.sh to install a new "fmri" virtual environment. Make sure the virtual environment is activated with "source fmri/bin/activate".
+3. Run ```. src/setup.sh``` to install a new "fmri" virtual environment. Make sure the virtual environment is activated with "source fmri/bin/activate".
 
 ## Usage
 
