@@ -32,7 +32,7 @@ dalle2-pytorch==1.15.6
 datasets==2.16.1
 debugpy==1.8.0
 decorator==5.1.1
-deepspeed==0.13.1
+deepspeed==0.12.2
 defusedxml==0.7.1
 diffusers==0.23.0
 dill==0.3.7
