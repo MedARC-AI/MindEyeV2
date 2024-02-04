@@ -317,8 +317,3 @@ def soft_cont_loss(student_preds, teacher_preds, teacher_aug_preds, temp=0.125):
     
     loss = (loss1 + loss2)/2
     return loss
-
-def ddp(model):
-    if isinstance(model, torch.nn.parallel.DistributedDataParallel):
-        return model.module
-    return model
