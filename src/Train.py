@@ -37,7 +37,6 @@ torch.backends.cuda.matmul.allow_tf32 = True
 
 # custom functions #
 import utils
-from utils import ddp
 
 
 # In[2]:
@@ -55,7 +54,7 @@ data_type = torch.float16 # change depending on your mixed_precision
 num_devices = torch.cuda.device_count()
 if num_devices==0: num_devices = 1
 
-## IF NOT USING DEEPSPEED ###
+### IF NOT USING DEEPSPEED ###
 # use_deepspeed = False
 # accelerator = Accelerator(split_batches=False, mixed_precision="fp16") # ['no', 'fp8', 'fp16', 'bf16']
 # if utils.is_interactive(): # set batch size here if using interactive notebook instead of submitting job
@@ -169,7 +168,7 @@ parser.add_argument(
     help="name of model, used for ckpt saving and wandb logging (if enabled)",
 )
 parser.add_argument(
-    "--data_path", type=str, default="/weka/proj-fmri/shared/natural-scenes-dataset",
+    "--data_path", type=str, default=os.getcwd(),
     help="Path to where NSD data is stored / where to download it to",
 )
 parser.add_argument(
@@ -918,17 +917,17 @@ for epoch in progress_bar:
                 select_list = [select_iters[f"subj0{s}_iter{train_i}"].detach().to(device) for s in subj_list]
                 select = torch.cat(select_list, dim=0)
 
-            voxel_ridge_list = [ddp(model).ridge(voxel_list[si],si) for si,s in enumerate(subj_list)]
+            voxel_ridge_list = [model.ridge(voxel_list[si],si) for si,s in enumerate(subj_list)]
             voxel_ridge = torch.cat(voxel_ridge_list, dim=0)
 
-            backbone, clip_voxels, blurry_image_enc_ = ddp(model).backbone(voxel_ridge)
+            backbone, clip_voxels, blurry_image_enc_ = model.backbone(voxel_ridge)
 
             if clip_scale>0:
                 clip_voxels_norm = nn.functional.normalize(clip_voxels.flatten(1), dim=-1)
                 clip_target_norm = nn.functional.normalize(clip_target.flatten(1), dim=-1)
 
             if use_prior:
-                loss_prior, prior_out = ddp(model).diffusion_prior(text_embed=backbone, image_embed=clip_target)
+                loss_prior, prior_out = model.diffusion_prior(text_embed=backbone, image_embed=clip_target)
                 loss_prior_total += loss_prior.item()
                 loss_prior *= prior_scale
                 loss += loss_prior
@@ -1066,8 +1065,8 @@ for epoch in progress_bar:
                 clip_target = clip_img_embedder(image.float())
 
                 for rep in range(3):
-                    voxel_ridge = ddp(model).ridge(voxel[:,rep],0) # 0th index of subj_list
-                    backbone0, clip_voxels0, blurry_image_enc_ = ddp(model).backbone(voxel_ridge)
+                    voxel_ridge = model.ridge(voxel[:,rep],0) # 0th index of subj_list
+                    backbone0, clip_voxels0, blurry_image_enc_ = model.backbone(voxel_ridge)
                     if rep==0:
                         clip_voxels = clip_voxels0
                         backbone = backbone0
@@ -1085,14 +1084,14 @@ for epoch in progress_bar:
                 random_samps = np.random.choice(np.arange(len(image)), size=len(image)//5, replace=False)
                 
                 if use_prior:
-                    loss_prior, contaminated_prior_out = ddp(model).diffusion_prior(text_embed=backbone[random_samps], image_embed=clip_target[random_samps])
+                    loss_prior, contaminated_prior_out = model.diffusion_prior(text_embed=backbone[random_samps], image_embed=clip_target[random_samps])
                     test_loss_prior_total += loss_prior.item()
                     loss_prior *= prior_scale
                     loss += loss_prior
                     
                     if visualize_prior:
                         # now get unCLIP prediction without feeding it the image embed to get uncontaminated reconstruction
-                        prior_out = ddp(model).diffusion_prior.p_sample_loop(backbone[random_samps].shape, 
+                        prior_out = model.diffusion_prior.p_sample_loop(backbone[random_samps].shape, 
                                         text_cond = dict(text_embed = backbone[random_samps]), 
                                         cond_scale = 1., timesteps = 20)
 
