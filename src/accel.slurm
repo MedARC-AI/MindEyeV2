@@ -9,6 +9,7 @@
 #SBATCH -o slurms/%j.out
 #SBATCH --comment=medarc
 #SBATCH --no-requeue
+#SBATCH --exclusive
 
 source ~/.bashrc
 cd /weka/proj-fmri/paulscotti/MindEyeV2/src
