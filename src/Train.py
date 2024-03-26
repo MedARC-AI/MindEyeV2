@@ -45,27 +45,27 @@ import utils
 
 
 ### Multi-GPU config ###
-# local_rank = os.getenv('RANK')
-# if local_rank is None: 
-#     local_rank = 0
-# else:
-#     local_rank = int(local_rank)
-# print("LOCAL RANK ", local_rank)  
+local_rank = os.getenv('RANK')
+if local_rank is None: 
+    local_rank = 0
+else:
+    local_rank = int(local_rank)
+print("LOCAL RANK ", local_rank)  
 
 data_type = torch.float16 # change depending on your mixed_precision
 
 # ## IF NOT USING DEEPSPEED ###
-# use_deepspeed = False
+use_deepspeed = False
 accelerator = Accelerator(split_batches=False, mixed_precision="fp16") # ['no', 'fp8', 'fp16', 'bf16']
-global_batch_size = batch_size = 8
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
-# ### DEEPSPEED INITIALIZATION ###
-use_deepspeed = True
+global_batch_size = batch_size = 16
+
+### DEEPSPEED INITIALIZATION ###
+# use_deepspeed = True
 # import deepspeed
 # num_devices = torch.cuda.device_count()
 # if num_devices==0: num_devices = 1
 # if num_devices <= 1 and utils.is_interactive():
-#     global_batch_size = batch_size = 32
+#     global_batch_size = batch_size = 8
 #     print(f"Setting batch_size to {batch_size}")
 #     # can emulate a distributed environment for deepspeed to work in jupyter notebook
 #     os.environ["MASTER_ADDR"] = "localhost"
@@ -108,9 +108,9 @@ print("device:",device)
 world_size = accelerator.state.num_processes
 distributed = not accelerator.state.distributed_type == 'NO'
 num_devices = torch.cuda.device_count()
-# if num_devices==0 or not distributed: num_devices = 1
-# num_workers = num_devices
-# print(accelerator.state)
+if num_devices==0 or not distributed: num_devices = 1
+num_workers = num_devices
+print(accelerator.state)
 
 # set data_type to match your mixed precision (automatically set based on deepspeed config)
 if accelerator.mixed_precision == "bf16":
@@ -120,35 +120,33 @@ elif accelerator.mixed_precision == "fp16":
 else:
     data_type = torch.float32
 
- # print("distributed =",distributed, "num_devices =", num_devices, "local rank =", local_rank, "world size =", world_size, "data_type =", data_type)
+# print("distributed =",distributed, "num_devices =", num_devices, "local rank =", local_rank, "world size =", world_size, "data_type =", data_type)
 print = accelerator.print # only print if local_rank=0
 
 
 # # Configurations
 
-# In[6]:
+# In[4]:
 
 
 # if running this interactively, can specify jupyter_args here for argparser to use
 if True:
-    model_name = "control_MEV2"
+    model_name = "re_MindEye2"
     print("model_name:", model_name)
     
     # global_batch_size and batch_size should already be defined in the above cells
     # other variables can be specified in the following string:
     jupyter_args = f"--data_path=/weka/proj-fmri/shared/mindeyev2_dataset \
                     --model_name={model_name} \
-                    --no-multi_subject --subj=1 --batch_size={batch_size} --num_sessions=3 \
-                    --hidden_dim=4096 --clip_scale=1. \
+                    --no-multi_subject --subj=1 --batch_size={batch_size} --num_sessions=10 \
+                    --hidden_dim=1024 --clip_scale=1. \
                     --blurry_recon --blur_scale=.5  \
                     --seq_past=0 --seq_future=0 \
                     --use_prior --prior_scale=30 --no-visualize_prior \
-                    --use_git --git_scale=3 \
-                    --n_blocks=4 --max_lr=3e-4 --mixup_pct=.33 --num_epochs=16 --no-use_image_aug \
-                    --ckpt_interval=1 --no-ckpt_saving --no-wandb_log"# \
+                    --n_blocks=4 --max_lr=3e-4 --mixup_pct=.33 --num_epochs=50 --no-use_image_aug \
+                    --ckpt_interval=1 --no-ckpt_saving --wandb_log"# \
                     # --multisubject_ckpt=../train_logs/multisubject_150ep_4block_hid4096_bs64" 
-    # --resume_from_ckpt 
-    # --multisubject_ckpt=../train_logs/multisubject_150ep_4block_hid4096_bs64 \
+
     print(jupyter_args)
     jupyter_args = jupyter_args.split()
     
@@ -158,7 +156,7 @@ if True:
     # get_ipython().run_line_magic('autoreload', '2')
 
 
-# In[8]:
+# In[5]:
 
 
 parser = argparse.ArgumentParser(description="Model Training Configuration")
@@ -189,10 +187,6 @@ parser.add_argument(
 parser.add_argument(
     "--visualize_prior",action=argparse.BooleanOptionalAction,default=False,
     help="output visualizations from unCLIP every ckpt_interval (requires more memory!)",
-)
-parser.add_argument(
-    "--use_git",action=argparse.BooleanOptionalAction,default=True,
-    help="whether to train diffusion prior (True) for GIT model using CLIP ViT-L/14",
 )
 parser.add_argument(
     "--batch_size", type=int, default=16,
@@ -229,10 +223,6 @@ parser.add_argument(
 parser.add_argument(
     "--prior_scale",type=float,default=30,
     help="multiply diffusion prior loss by this",
-)
-parser.add_argument(
-    "--git_scale",type=float,default=3,
-    help="multiply git diffusion prior loss by this",
 )
 parser.add_argument(
     "--use_image_aug",action=argparse.BooleanOptionalAction,default=False,
@@ -316,7 +306,7 @@ print("subj_list", subj_list, "num_sessions", num_sessions)
 
 # ### Creating wds dataloader, preload betas and all 73k possible images
 
-# In[10]:
+# In[6]:
 
 
 def my_split_by_node(urls): return urls
@@ -336,7 +326,7 @@ num_iterations_per_epoch = num_samples_per_epoch // (batch_size*len(subj_list))
 print("batch_size =", batch_size, "num_iterations_per_epoch =",num_iterations_per_epoch, "num_samples_per_epoch =",num_samples_per_epoch)
 
 
-# In[11]:
+# In[7]:
 
 
 train_data = {}
@@ -410,23 +400,8 @@ seq_len = seq_past + 1 + seq_future
 print(f"currently using {seq_len} seq_len (chose {seq_past} past behav and {seq_future} future behav)")
 
 
-def get_vitBGembeds(indices):
-    base_dir = "/weka/proj-fmri/shared/vitBG_embeds/"
-    tensors = []
+# In[8]:
 
-    for index in indices:
-        # Construct the filename and load the tensor onto the CPU
-        filename = f"imgt{int(index)}_embed.pt"
-        filepath = os.path.join(base_dir, filename)
-        tensor = torch.load(filepath, map_location="cpu")
-
-        # Add the tensor to the list
-        tensors.append(tensor)
-
-    # Stack all the tensors along a new axis
-    combined = torch.stack(tensors)
-
-    return combined.squeeze(1)
 
 # Load 73k NSD images
 f = h5py.File(f'{data_path}/coco_images_224_float16.hdf5', 'r')
@@ -439,16 +414,16 @@ print("Loaded all 73k possible NSD images to cpu!", images.shape)
 
 # ### CLIP image embeddings  model
 
-# In[13]:
+# In[9]:
 
 
-# clip_img_embedder = FrozenOpenCLIPImageEmbedder(
-#     arch="ViT-bigG-14",
-#     version="laion2b_s39b_b160k",
-#     output_tokens=True,
-#     only_tokens=True,
-# )
-# clip_img_embedder.to(device)
+clip_img_embedder = FrozenOpenCLIPImageEmbedder(
+    arch="ViT-bigG-14",
+    version="laion2b_s39b_b160k",
+    output_tokens=True,
+    only_tokens=True,
+)
+clip_img_embedder.to(device)
 
 clip_seq_dim = 256
 clip_emb_dim = 1664
@@ -456,7 +431,7 @@ clip_emb_dim = 1664
 
 # ### SD VAE
 
-# In[17]:
+# In[10]:
 
 
 if blurry_recon:
@@ -479,7 +454,7 @@ if blurry_recon:
     autoenc.to(device)
     utils.count_params(autoenc)
     
-    from convnext import ConvnextXL
+    from autoencoder.convnext import ConvnextXL
     cnx = ConvnextXL('/weka/proj-fmri/shared/cache/convnextv2/convnext_xlarge_alpha0.75_fullckpt.pth')
     cnx.requires_grad_(False)
     cnx.eval()
@@ -499,7 +474,7 @@ if blurry_recon:
 
 # ### MindEye modules
 
-# In[18]:
+# In[11]:
 
 
 class MindEyeModule(nn.Module):
@@ -512,7 +487,7 @@ model = MindEyeModule()
 model
 
 
-# In[19]:
+# In[12]:
 
 
 class RidgeRegression(torch.nn.Module):
@@ -536,7 +511,7 @@ b = torch.randn((2,seq_len,num_voxels_list[0]))
 print(b.shape, model.ridge(b,0).shape)
 
 
-# In[20]:
+# In[ ]:
 
 
 from functools import partial
@@ -559,8 +534,6 @@ class BrainNetwork(nn.Module):
         # Output linear layer
         self.backbone_linear = nn.Linear(h * seq_len, out_dim, bias=True) 
         self.clip_proj = self.projector(clip_size, clip_size, h=clip_size)
-        self.git_proj1 = nn.Linear(256, 257)
-        self.git_proj2 = self.projector(clip_size, 1024, h=1024)
         
         if blurry_recon:
             self.blin1 = nn.Linear(h*seq_len,4*28*28,bias=True)
@@ -618,7 +591,7 @@ class BrainNetwork(nn.Module):
         
     def forward(self, x):
         # make empty tensors
-        c,b,t = torch.Tensor([0.]), torch.Tensor([[0.],[0.]]), torch.Tensor([0.])
+        c,b = torch.Tensor([0.]), torch.Tensor([[0.],[0.]])
         
         # Mixer blocks
         residual1 = x
@@ -644,12 +617,8 @@ class BrainNetwork(nn.Module):
             b_aux = self.b_maps_projector(b).flatten(2).permute(0,2,1)
             b_aux = b_aux.view(len(b_aux), 49, 512)
             b = (self.bupsampler(b), b_aux)
-            
-        if use_git:
-            t = self.git_proj1(backbone.permute(0,2,1))
-            t = self.git_proj2(t.permute(0,2,1))
         
-        return backbone, c, b, t
+        return backbone, c, b
 
 model.backbone = BrainNetwork(h=hidden_dim, in_dim=hidden_dim, seq_len=seq_len, 
                           clip_size=clip_emb_dim, out_dim=clip_emb_dim*clip_seq_dim)
@@ -660,13 +629,13 @@ utils.count_params(model)
 b = torch.randn((2,seq_len,hidden_dim))
 print("b.shape",b.shape)
 
-backbone_, clip_, blur_, text_ = model.backbone(b)
-print(backbone_.shape, clip_.shape, blur_[0].shape, blur_[1].shape, text_.shape)
+backbone_, clip_, blur_ = model.backbone(b)
+print(backbone_.shape, clip_.shape, blur_[0].shape, blur_[1].shape)
 
 
 # ### Adding diffusion prior + unCLIP if use_prior=True
 
-# In[21]:
+# In[15]:
 
 
 if use_prior:
@@ -729,7 +698,7 @@ if use_prior:
         diffusion_engine.eval().requires_grad_(False)
         diffusion_engine.to(device)
 
-        ckpt_path = '/weka/proj-fmri/shared/mindeyev2_dataset/unclip6_epoch0_step110000.ckpt'
+        ckpt_path = '/weka/proj-fmri/shared/cache/sdxl_unclip/unclip6_epoch0_step110000.ckpt'
         ckpt = torch.load(ckpt_path, map_location='cpu')
         diffusion_engine.load_state_dict(ckpt['state_dict'])
 
@@ -742,52 +711,9 @@ if use_prior:
         print("vector_suffix", vector_suffix.shape)
 
 
-# In[22]:
-
-
-if use_git:
-    from transformers import AutoProcessor, AutoModelForCausalLM
-    from modeling_git import GitForCausalLMClipEmb
-    processor = AutoProcessor.from_pretrained("microsoft/git-large-coco")
-    clip_text_model = GitForCausalLMClipEmb.from_pretrained("microsoft/git-large-coco")
-    clip_text_model.to(device)
-    clip_text_model.eval().requires_grad_(False)
-
-    pixel_values = processor(images=images[:1], return_tensors="pt", do_rescale=False).pixel_values.to(device)
-    image_features = clip_text_model.git.image_encoder(pixel_values).last_hidden_state
-    _, clip_text_seq_dim, clip_text_emb_dim = image_features.shape
-
-    # setup diffusion prior network
-    out_text_dim = clip_text_emb_dim
-    depth = 3
-    dim_head = 32
-    heads = clip_text_emb_dim//32 # heads * dim_head = clip_emb_dim
-    timesteps = 50
-    git_prior_network = VersatileDiffusionPriorNetwork(
-            dim=out_text_dim,
-            depth=depth,
-            dim_head=dim_head,
-            heads=heads,
-            causal=False,
-            num_tokens = clip_text_seq_dim,
-            learned_query_mode="pos_emb"
-        )
-    model.git_diffusion_prior = BrainDiffusionPrior(
-        net=git_prior_network,
-        image_embed_dim=out_text_dim,
-        condition_on_text_encodings=False,
-        timesteps=timesteps,
-        cond_drop_prob=0.2,
-        image_embed_scale=None,
-    )
-
-    utils.count_params(model.git_diffusion_prior)
-    utils.count_params(model)
-
-
 # ### Setup optimizer / lr / ckpt saving
 
-# In[23]:
+# In[17]:
 
 
 no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
@@ -801,11 +727,6 @@ if use_prior:
     opt_grouped_parameters.extend([
         {'params': [p for n, p in model.diffusion_prior.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': 1e-2},
         {'params': [p for n, p in model.diffusion_prior.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
-    ])
-if use_git:
-    opt_grouped_parameters.extend([
-            {'params': [p for n, p in model.git_diffusion_prior.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': 1e-2},
-            {'params': [p for n, p in model.git_diffusion_prior.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
     ])
 
 optimizer = torch.optim.AdamW(opt_grouped_parameters, lr=max_lr)
@@ -891,12 +812,12 @@ num_params = utils.count_params(model)
 
 # # Weights and Biases
 
-# In[24]:
+# In[18]:
 
 
 if accelerator.is_main_process and wandb_log: # only use main process for wandb logging
     import wandb
-    wandb_project = 'MindEyeV2_evals'
+    wandb_project = 'mindeye'
     print(f"wandb {wandb_project} run {model_name}")
     # need to configure wandb beforehand in terminal with "wandb init"!
     wandb_config = {
@@ -909,7 +830,6 @@ if accelerator.is_main_process and wandb_log: # only use main process for wandb 
       "clip_scale": clip_scale,
       "prior_scale": prior_scale,
       "blur_scale": blur_scale,
-      "git_scale": git_scale,
       "use_image_aug": use_image_aug,
       "max_lr": max_lr,
       "mixup_pct": mixup_pct,
@@ -938,7 +858,7 @@ else:
 
 # # Main
 
-# In[25]:
+# In[19]:
 
 
 epoch = 0
@@ -947,7 +867,7 @@ best_test_loss = 1e9
 torch.cuda.empty_cache()
 
 
-# In[26]:
+# In[20]:
 
 
 # load multisubject stage1 ckpt if set
@@ -957,7 +877,7 @@ if multisubject_ckpt is not None and not resume_from_ckpt:
     load_ckpt("last",outdir=multisubject_ckpt,load_lr=False,load_optimizer=False,load_epoch=False,strict=False,use_deepspeed=use_deepspeed,multisubj_loading=True)
 
 
-# In[27]:
+# In[21]:
 
 
 # load saved ckpt model weights into current model
@@ -968,7 +888,7 @@ elif wandb_log:
         load_ckpt("last",load_lr=True,load_optimizer=True,load_epoch=True)
 
 
-# In[28]:
+# In[22]:
 
 
 train_dls = [train_dl[f'subj0{s}'] for s in subj_list]
@@ -977,11 +897,11 @@ model, optimizer, *train_dls, lr_scheduler = accelerator.prepare(model, optimize
 # leaving out test_dl since we will only have local_rank 0 device do evals
 
 
-# In[29]:
+# In[ ]:
 
 
 print(f"{model_name} starting with epoch {epoch} / {num_epochs}")
-progress_bar = tqdm(range(epoch,num_epochs), ncols=1200, disable=accelerator.is_main_process is False)
+progress_bar = tqdm(range(epoch,num_epochs), ncols=1200, disable=(accelerator.is_main_process is False))
 test_image, test_voxel = None, None
 mse = nn.MSELoss()
 l1 = nn.L1Loss()
@@ -1014,16 +934,13 @@ for epoch in progress_bar:
     # pre-load all batches for this epoch (it's MUCH faster to pre-load in bulk than to separate loading per batch)
     voxel_iters = {} # empty dict because diff subjects have differing # of voxels
     image_iters = torch.zeros(num_iterations_per_epoch, batch_size*len(subj_list), 3, 224, 224).float()
-    behav_iters = torch.zeros(num_iterations_per_epoch, batch_size*len(subj_list), ).int()
     annot_iters = {}
     perm_iters, betas_iters, select_iters = {}, {}, {}
     for s, train_dl in enumerate(train_dls):
         with torch.cuda.amp.autocast(dtype=data_type):
             for iter, (behav0, past_behav0, future_behav0, old_behav0) in enumerate(train_dl):    
                 image0 = images[behav0[:,0,0].cpu().long()].float()
-                b0 = behav0[:,0,0].cpu().long()
                 image_iters[iter,s*batch_size:s*batch_size+batch_size] = image0
-                behav_iters[iter,s*batch_size:s*batch_size+batch_size] = b0
                 
                 voxel0 = voxels[f'subj0{subj_list[s]}'][behav0[:,0,5].cpu().long()]
                 voxel0 = torch.Tensor(voxel0)
@@ -1080,17 +997,15 @@ for epoch in progress_bar:
         with torch.cuda.amp.autocast(dtype=data_type):
             optimizer.zero_grad()
             loss=0.
-            behav = behav_iters[train_i]
+
             voxel_list = [voxel_iters[f"subj0{s}_iter{train_i}"].detach().to(device) for s in subj_list]
             image = image_iters[train_i].detach()
-            if use_git:
-                pixel_values = processor(images=image, return_tensors="pt", do_rescale=False).pixel_values.to(device)
             image = image.to(device)
 
             if use_image_aug: 
                 image = img_augment(image)
 
-            clip_target = get_vitBGembeds(behav).to(device)
+            clip_target = clip_img_embedder(image)
             assert not torch.any(torch.isnan(clip_target))
 
             if epoch < int(mixup_pct * num_epochs):
@@ -1104,7 +1019,7 @@ for epoch in progress_bar:
             voxel_ridge_list = [model.ridge(voxel_list[si],si) for si,s in enumerate(subj_list)]
             voxel_ridge = torch.cat(voxel_ridge_list, dim=0)
 
-            backbone, clip_voxels, blurry_image_enc_, text_ = model.backbone(voxel_ridge)
+            backbone, clip_voxels, blurry_image_enc_ = model.backbone(voxel_ridge)
 
             if clip_scale>0:
                 clip_voxels_norm = nn.functional.normalize(clip_voxels.flatten(1), dim=-1)
@@ -1118,13 +1033,6 @@ for epoch in progress_bar:
 
                 recon_cossim += nn.functional.cosine_similarity(prior_out, clip_target).mean().item()
                 recon_mse += mse(prior_out, clip_target).item()
-
-            if use_git:
-                text_features = clip_text_model.git.image_encoder(pixel_values).last_hidden_state
-                loss_prior, text_prior_out = model.git_diffusion_prior(text_embed=text_, image_embed=text_features)
-                loss_prior_total += loss_prior.item()
-                loss_prior *= git_scale
-                loss += loss_prior
 
             if clip_scale>0:
                 if epoch < int(mixup_pct * num_epochs):                
@@ -1257,7 +1165,7 @@ for epoch in progress_bar:
 
                 for rep in range(3):
                     voxel_ridge = model.ridge(voxel[:,rep],0) # 0th index of subj_list
-                    backbone0, clip_voxels0, blurry_image_enc_, _ = model.backbone(voxel_ridge)
+                    backbone0, clip_voxels0, blurry_image_enc_ = model.backbone(voxel_ridge)
                     if rep==0:
                         clip_voxels = clip_voxels0
                         backbone = backbone0
@@ -1389,8 +1297,8 @@ for epoch in progress_bar:
             if wandb_log: wandb.log(logs)
             
     # Save model checkpoint and reconstruct
-    if (ckpt_saving) and (epoch % ckpt_interval == 0):
-        save_ckpt(f'last_control')
+    # if (ckpt_saving) and (epoch % ckpt_interval == 0):
+    #     save_ckpt(f'last')
 
     # wait for other GPUs to catch up if needed
     accelerator.wait_for_everyone()
@@ -1398,10 +1306,13 @@ for epoch in progress_bar:
     gc.collect()
 
 print("\n===Finished!===\n")
+accelerator.save_state('/weka/proj-fmri/mihirneal/MindEyeV2/src/ablation_ckpt/re_MindEye2')
+save_ckpt(f're_MindEye2')
 if ckpt_saving:
-    save_ckpt(f'control_MEV2')
+    save_ckpt(f're_MindEye2')
 if not utils.is_interactive():
     sys.exit(0)
+
 
 # In[ ]:
 

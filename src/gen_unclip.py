@@ -17,7 +17,7 @@ from generative_models.sgm.modules.encoders.modules import FrozenOpenCLIPImageEm
 from generative_models.sgm.models.diffusion import DiffusionEngine
 from omegaconf import OmegaConf
 
-sample_dir = "/weka/proj-fmri/shared/coco/sampled_imgs"
+sample_dir = "/weka/proj-fmri/shared/coco/res_sampled_imgs"
 sampled_images = os.listdir(sample_dir)
 data_path="/weka/proj-fmri/shared/mindeyev2_dataset"
 data_type = torch.float16
@@ -74,7 +74,7 @@ vector_suffix = out["vector"].to(device)
 print("vector_suffix", vector_suffix.shape)
 
 
-unclip_savedir = "/weka/proj-fmri/shared/coco/xlunclip_imgs"
+unclip_savedir = "/weka/proj-fmri/shared/coco/new_res_xlunclip_imgs"
 sam_img = os.listdir(sample_dir)
 def convert_and_normalize(image_path):
     img = Image.open(image_path)
@@ -104,5 +104,9 @@ for i in tqdm(range(len(sam_img))):
                              diffusion_engine,
                              vector_suffix)
     img_unclip = transforms.ToPILImage()(samples[0])
-    img_unclip.save(gen_path)
+    img_resized = img_unclip.resize((480, 480), Image.Resampling.LANCZOS)
+
+
+    
+    img_resized.save(gen_path)
 

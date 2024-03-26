@@ -12,7 +12,7 @@ from torchvision import transforms
 from PIL import Image
 import utils
 
-sample_dir = "/weka/proj-fmri/shared/coco/sampled_imgs"
+sample_dir = "/weka/proj-fmri/shared/coco/res_sampled_imgs"
 sampled_images = os.listdir(sample_dir)
 for i in tqdm(range(len(sampled_images))):
     if len(os.listdir(sample_dir)) == 30000:
@@ -46,7 +46,7 @@ num_inference_steps = 20
 text_image_ratio = .0 # .5 means equally weight text and image, 0 means use only image
 
 
-vd_savedir = "/weka/proj-fmri/shared/coco/vd_imgs"
+vd_savedir = "/weka/proj-fmri/shared/coco/new_res_vd_imgs"
 sam_img = os.listdir(sample_dir)
 vd_pipe.set_progress_bar_config(disable=True)
 for i in tqdm(range(len(sam_img))):

@@ -1,6 +1,7 @@
 wandb/
 train_logs/
 slurms/
+src/ablation_ckpt/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -68,6 +69,8 @@ db.sqlite3-journal
 # Flask stuff:
 instance/
 .webassets-cache
+src/evals/
+src/tables/
 
 # Scrapy stuff:
 .scrapy

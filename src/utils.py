@@ -22,7 +22,7 @@ from PIL import Image
 import requests
 import io
 import time 
-from models import Clipper
+from models_mev1 import Clipper
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -468,7 +468,6 @@ def iterate_range(start, length, batchsize):
 def get_value(_x):
     return np.copy(_x.data.cpu().numpy())
 
-<<<<<<< HEAD
 def create_grid(images, rows=None, cols=None):
     if rows is None or cols is None:
         grid_size = math.ceil(math.sqrt(len(images)))  # Calculate grid size
@@ -759,7 +758,7 @@ def reconstruction(
             ax[i].imshow(torch_to_Image(recon))
 
     return fig, brain_recons, best_picks, recon_img
-=======
+
 def soft_cont_loss(student_preds, teacher_preds, teacher_aug_preds, temp=0.125):
     teacher_teacher_aug = (teacher_preds @ teacher_aug_preds.T)/temp
     teacher_teacher_aug_t = (teacher_aug_preds @ teacher_preds.T)/temp
@@ -771,4 +770,4 @@ def soft_cont_loss(student_preds, teacher_preds, teacher_aug_preds, temp=0.125):
     
     loss = (loss1 + loss2)/2
     return loss
->>>>>>> 9a21222bbd35e834ac8edf8dcdbbfd5d75a3e77d
+
