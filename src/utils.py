@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 from torchvision import transforms
 import torch
 import torch.nn as nn
@@ -6,6 +7,8 @@ import torch.nn.functional as F
 import PIL
 import random
 import os
+import pickle
+from scipy.io import loadmat
 import matplotlib.pyplot as plt
 import math
 import webdataset as wds
@@ -317,3 +320,152 @@ def soft_cont_loss(student_preds, teacher_preds, teacher_aug_preds, temp=0.125):
     
     loss = (loss1 + loss2)/2
     return loss
+
+
+def condition_average(x, y, cond, nest=False):
+    idx, idx_count = np.unique(cond, return_counts=True)
+    idx_list = [np.array(cond)==i for i in np.sort(idx)]
+    if nest:
+        avg_x = torch.zeros((len(idx), idx_count.max(), x.shape[1]), dtype=torch.float32)
+    else:
+        avg_x = torch.zeros((len(idx), 1, x.shape[1]), dtype=torch.float32)
+    arranged_y = torch.zeros((len(idx)), y.shape[1], y.shape[2], y.shape[3])
+    for i, m in enumerate(idx_list):
+        if nest:
+            if np.sum(m) == idx_count.max():
+                avg_x[i] = x[m]
+            else:
+                avg_x[i,:np.sum(m)] = x[m]
+        else:
+            avg_x[i] = torch.mean(x[m], axis=0)
+        arranged_y[i] = y[m[0]]
+
+    return avg_x, y, len(idx_count)
+
+#subject: nsd subject index between 1-8
+#mode: vision, imagery
+#stimtype: all, simple, complex, concepts
+#average: whether to average across trials, will produce x that is (stimuli, 1, voxels)
+#nest: whether to nest the data according to stimuli, will produce x that is (stimuli, trials, voxels)
+#data_root: path to where the dataset is saved.
+def load_nsd_mental_imagery(subject, mode, stimtype="all", average=False, nest=False, data_root="../dataset/"):
+    # This file has a bunch of information about the stimuli and cue associations that will make loading it easier
+    img_stim_file = f"{data_root}/nsddata_stimuli/stimuli/nsdimagery_stimuli.pkl3"
+    ex_file = open(img_stim_file, 'rb')
+    imagery_dict = pickle.load(ex_file)
+    ex_file.close()
+    # Indicates what experiments trials belong to
+    exps = imagery_dict['exps']
+    # Indicates the cues for different stimuli
+    cues = imagery_dict['cues']
+    # Maps the cues to the stimulus image information
+    image_map  = imagery_dict['image_map']
+    # Organize the indices of the trials according to the modality and the type of stimuli
+    cond_idx = {
+    'visionsimple': np.arange(len(exps))[exps=='visA'],
+    'visioncomplex': np.arange(len(exps))[exps=='visB'],
+    'visionconcepts': np.arange(len(exps))[exps=='visC'],
+    'visionall': np.arange(len(exps))[np.logical_or(np.logical_or(exps=='visA', exps=='visB'), exps=='visC')],
+    'imagerysimple': np.arange(len(exps))[np.logical_or(exps=='imgA_1', exps=='imgA_2')],
+    'imagerycomplex': np.arange(len(exps))[np.logical_or(exps=='imgB_1', exps=='imgB_2')],
+    'imageryconcepts': np.arange(len(exps))[np.logical_or(exps=='imgC_1', exps=='imgC_2')],
+    'imageryall': np.arange(len(exps))[np.logical_or(
+                                        np.logical_or(
+                                            np.logical_or(exps=='imgA_1', exps=='imgA_2'),
+                                            np.logical_or(exps=='imgB_1', exps=='imgB_2')),
+                                        np.logical_or(exps=='imgC_1', exps=='imgC_2'))]}
+    # Load normalized betas
+    x = torch.load(f"{data_root}/preprocessed_data/subject{subject}/nsd_imagery.pt").requires_grad_(False).to("cpu")
+    # Find the trial indices conditioned on the type of trials we want to load
+    cond_im_idx = {n: [image_map[c] for c in cues[idx]] for n,idx in cond_idx.items()}
+    conditionals = cond_im_idx[mode+stimtype]
+    # Stimuli file is of shape (18,3,425,425), these can be converted back into PIL images using transforms.ToPILImage()
+    y = torch.load(f"{data_root}/nsddata_stimuli/stimuli/imagery_stimuli_18.pt").requires_grad_(False).to("cpu")
+    # Prune the beta file down to specific experimental mode/stimuli type
+    x = x[cond_idx[mode+stimtype]]
+    # # If stimtype is not all, then prune the image data down to the specific stimuli type
+    if stimtype == "simple":
+        y = y[:6]
+    elif stimtype == "complex":
+        y = y[6:12]
+    elif stimtype == "concepts":
+        y = y[12:]
+
+    # Average or nest the betas across trials
+    if average or nest:
+        x, y, sample_count = condition_average(x, y, conditionals, nest=nest)
+    else:
+        x = x.reshape((x.shape[0], 1, x.shape[1]))
+        y = y[conditionals]
+
+    print(x.shape, y.shape)
+    return x, y
+
+#subject: nsd subject index between 1-8
+#average: whether to average across trials, will produce x that is (stimuli, 1, voxels)
+#nest: whether to nest the data according to stimuli, will produce x that is (stimuli, trials, voxels)
+#data_root: path to where the dataset is saved.
+def load_nsd_synthetic(subject, average=False, nest=False, data_root="../dataset/"):
+    y = torch.zeros((284, 3, 714, 1360))
+    y[:220] = torch.load(f"{data_root}/nsddata_stimuli/stimuli/nsdsynthetic/nsd_synthetic_stim_part1.pt")
+    #The last 64 stimuli are slightly different for each subject, so we load these separately for each subject
+    y[220:] = torch.load(f"{data_root}/nsddata_stimuli/stimuli/nsdsynthetic/nsd_synthetic_stim_part2_sub{subject}.pt")
+    
+    x = torch.load(f"{data_root}/preprocessed_data/subject{subject}/nsd_synthetic.pt").requires_grad_(False).to("cpu")
+    conditionals = loadmat(f'{data_root}/nsddata/experiments/nsdsynthetic/nsdsynthetic_expdesign.mat')['masterordering'][0].astype(int) - 1
+    
+    if average or nest:
+        x, y, sample_count = condition_average(x, y, conditionals, nest=nest)
+    else:
+        x = x.reshape((x.shape[0], 1, x.shape[1]))
+        y = y[conditionals]
+    print(x.shape, y.shape)
+    return x, y    
+
+#subject: subject index between 1-3, or the subject identifier: CO, LF, TN
+#mode: vision, imagery
+#mask: True or False, if true masks the betas to visual cortex, otherwise returns the whole scanned region
+#image_type: stimuli, cue
+    # - stimuli will return the images with content that was either seen or imagined, this is what was presented to the subject in vision trials
+    # - cue will return only the background images with the cue and no content, this is what was presented to the subject in imagery trials
+#average: whether to average across trials, will produce x that is (stimuli, 1, voxels)
+#nest: whether to nest the data according to stimuli, will produce x that is (stimuli, trials, voxels)
+    # WARNING: Not all stimuli have the same number of repeats, so the middle dimension for the trial repetitions will contain empty values for some stimuli, be sure to account for this when loading
+def load_imageryrf(subject, mode, mask=True, image_type="stimuli", average=False, nest=False, data_root="../dataset/"):
+    # This file has a bunch of information about the stimuli and cue associations that will make loading it easier
+    img_conditional_file = f"{data_root}/imageryrf_single_trial/stimuli/imageryrf_conditions.pkl3"
+    ex_file = open(img_conditional_file, 'rb')
+    conditional_dict = pd.compat.pickle_compat.load(ex_file) 
+    ex_file.close()
+    # If subject identifier is int, grab the string identifer
+    if isinstance(subject, int):
+        subject = ["CO","LF","TN"][subject-1] 
+    subject_cond = conditional_dict[subject]
+    # Indicates what experiments trials belong to
+    exps = subject_cond['experiment_cond']
+    # Maps the cues to the stimulus image information
+    image_map  = subject_cond['stimuli_cond'].to(int)
+    # Organize the indices of the trials according to the modality and the type of stimuli
+    cond_idx = {
+    'vision': np.arange(len(exps))[np.char.find(exps, 'pcp') != -1],
+    'imagery': np.arange(len(exps))[np.char.find(exps, 'img') != -1]}
+    # Load normalized betas
+    if mask:
+        x = torch.load(f"{data_root}/imageryrf_single_trial/{subject}/single_trial_betas_masked.pt").requires_grad_(False).to("cpu")
+    else:
+        x = torch.load(f"{data_root}/imageryrf_single_trial/{subject}/single_trial_betas.pt").requires_grad_(False).to("cpu")
+    # Find the stimuli indices conditioned on the mode of trials we want to load
+    conditionals = image_map[cond_idx[mode]]
+    # Stimuli file is of shape (18,3,425,425), these can be converted back into PIL images using transforms.ToPILImage()
+    y = torch.load(f"{data_root}/imageryrf_single_trial/stimuli/{image_type}_images.pt").requires_grad_(False).to("cpu")
+    # Prune the beta file down to specific experimental mode/stimuli type
+    x = x[cond_idx[mode]]
+    # Average or nest the betas across trials
+    if average or nest:
+        x, y, sample_count = condition_average(x, y, conditionals, nest=nest)
+    else:
+        x = x.reshape((x.shape[0], 1, x.shape[1]))
+        y = y[conditionals]
+
+    print(x.shape, y.shape)
+    return x, y
