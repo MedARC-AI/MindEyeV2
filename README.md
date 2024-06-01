@@ -51,7 +51,8 @@ These files can be run as Jupyter notebooks or can be converted to .py files wit
     - To fine-tune from a multi-subject model, set ```--no-multi_subject``` and ```--multisubject_ckpt=path_to_your_pretrained_ckpt_folder```
     - Note if you are running multi-gpu, you need to first set your accelerate to use deepspeed stage 2 (with cpu offloading) via "accelerate config" in terminal ([example](https://i.imgur.com/iIbvcPq.png))
 - ```src/recon_inference.ipynb``` will run inference on a pretrained model, outputting tensors of reconstructions/predicted captions/etc.
-- ```src/final_evaluations.ipynb``` will visualize reconstructions output from ```src/recon_inference``` and compute quantitative metrics.
+- - ```src/enhanced_recon_inference.ipynb``` will run the refinement stage for producing better looking reconstructions, outputting enhancedrecons.pt in the same folder used by recon_inference.ipynb
+- ```src/final_evaluations.ipynb``` will visualize the saved reconstructions and compute quantitative metrics.
 - See .slurm files for example scripts for running the .ipynb notebooks as batch jobs submitted to Slurm job scheduling.
 
 ## FAQ
