@@ -14,7 +14,9 @@ cd MindEyeV2
 ```
 
 2. Download https://huggingface.co/datasets/pscotti/mindeyev2 and place them in the same folder as your git clone.
+
 Warning: **Cloning the entire huggingface dataset will be over 100 GB of data!**
+
 The below code will download the subset of files required to run all our training / inference / evaluation code (does not download pretrained models).
 
 ```
@@ -37,6 +39,8 @@ download_files(repo_id, branch, exclude_dirs)
 3. Run ```. src/setup.sh``` to install a new "fmri" virtual environment. Make sure the virtual environment is activated with "source fmri/bin/activate".
 
 ## Usage
+
+MindEye2 consists of three main jupyter notebooks, "Train.ipynb" for training MindEye, "recon_inference.ipynb" for running inference on MindEye ckpts, and "final-evaluations.ipynb" for visualizing the outputs from "recon_inference" and computing quantitative evalutions. These notebooks can be run as Jupyter notebooks or can be converted to .py files and run via slurm. If you are training MindEye on a single GPU, expect that pre-training and fine-tuning both take approximately 1 day to complete.
 
 - ```src/Train.ipynb``` trains models (single-subject or multi-subject depending on your config). Check the argparser arguments to specify how you want to train the model (e.g., ```--num_sessions=1``` to train with 1-hour of data).
     - Final models used in the paper were trained on an 8xA100 80GB node and will OOM on weaker compute. You can train the model on weaker compute with very minimal performance impact by changing certain model arguments: We recommend lowering hidden_dim to 1024 (or even 512), removing the low-level submodule (``--no-blurry_recon``), and lowering the batch size.
