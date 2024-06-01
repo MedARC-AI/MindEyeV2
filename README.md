@@ -40,7 +40,9 @@ download_files(repo_id, branch, exclude_dirs)
 
 ## Usage
 
-MindEye2 consists of three main jupyter notebooks, "Train.ipynb" for training MindEye, "recon_inference.ipynb" for running inference on MindEye ckpts, and "final-evaluations.ipynb" for visualizing the outputs from "recon_inference" and computing quantitative evalutions. These notebooks can be run as Jupyter notebooks or can be converted to .py files and run via slurm. If you are training MindEye on a single GPU, expect that pre-training and fine-tuning both take approximately 1 day to complete.
+MindEye2 consists of three main jupyter notebooks, "Train.ipynb" for training/fine-tuning, "recon_inference.ipynb" for doing inference on MindEye2 ckpts, and "final-evaluations.ipynb" for visualizing reconstructions and computing quantitative evalutions. 
+
+These files can be run as Jupyter notebooks or can be converted to .py files with configuration specified via argparser. If you are training MindEye2 on a single GPU, expect that pre-training and fine-tuning both take approximately 1 day to complete.
 
 - ```src/Train.ipynb``` trains models (single-subject or multi-subject depending on your config). Check the argparser arguments to specify how you want to train the model (e.g., ```--num_sessions=1``` to train with 1-hour of data).
     - Final models used in the paper were trained on an 8xA100 80GB node and will OOM on weaker compute. You can train the model on weaker compute with very minimal performance impact by changing certain model arguments: We recommend lowering hidden_dim to 1024 (or even 512), removing the low-level submodule (``--no-blurry_recon``), and lowering the batch size.
