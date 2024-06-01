@@ -59,6 +59,7 @@ Our webdatasets only contain behavioral information; the brain activations and t
 
 Below is the lookup table for these arrays, with variables referenced from the Natural Scenes Dataset manual: https://cvnlab.slite.page/p/fRv4lz5V2F/Untitled
 
+```
 0 = COCO IDX (73K) (used to index coco_images_224_float16.hdf5)
 1 = SUBJECT
 2 = SESSION
@@ -76,6 +77,7 @@ Below is the lookup table for these arrays, with variables referenced from the N
 14 = TOTAL2
 15 = BUTTON
 16 = IS_SHARED1000
+```
 
 -1 values in these arrays should be interpreted as NaNs.
 
