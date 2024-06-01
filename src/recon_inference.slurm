@@ -17,6 +17,6 @@ cd /weka/proj-fmri/paulscotti/MindEyeV2/src
 jupyter nbconvert recon_inference.ipynb --to python
 jupyter nbconvert enhanced_recon_inference.ipynb --to python
 
-model_name="final_subj01_notpretrained_1sess_24bs"
+model_name="finetuned_subj01_40sess"
 
-srun python recon_inference.py --model_name=${model_name} --subj=1 --n_blocks=4 --hidden_dim=4096 && python enhanced_recon_inference.py --model_name=${model_name} --subj=1
+srun python recon_inference.py --model_name=${model_name} --subj=1 --n_blocks=4 --hidden_dim=1024 && python enhanced_recon_inference.py --model_name=${model_name} --subj=1
