@@ -40,7 +40,7 @@ download_files(repo_id, branch, exclude_dirs)
 
 ## Usage
 
-MindEye2 consists of three main jupyter notebooks, "Train.ipynb" for training/fine-tuning, "recon_inference.ipynb" for doing inference on MindEye2 ckpts, and "final-evaluations.ipynb" for visualizing reconstructions and computing quantitative evalutions. 
+MindEye2 consists of four main jupyter notebooks, "Train.ipynb" does training/fine-tuning, "recon_inference.ipynb" does inference on MindEye2 ckpts and outputs unrefined reconstructions, "enhanced_recon_inference.ipynb" does reconstruction refinement using predicted image captions, and "final_evaluations.ipynb" visualizes reconstructions and computes quantitative evalutions. 
 
 These files can be run as Jupyter notebooks or can be converted to .py files with configuration specified via argparser. If you are training MindEye2 on a single GPU, expect that pre-training and fine-tuning both take approximately 1 day to complete.
 
@@ -51,7 +51,7 @@ These files can be run as Jupyter notebooks or can be converted to .py files wit
     - To fine-tune from a multi-subject model, set ```--no-multi_subject``` and ```--multisubject_ckpt=path_to_your_pretrained_ckpt_folder```
     - Note if you are running multi-gpu, you need to first set your accelerate to use deepspeed stage 2 (with cpu offloading) via "accelerate config" in terminal ([example](https://i.imgur.com/iIbvcPq.png))
 - ```src/recon_inference.ipynb``` will run inference on a pretrained model, outputting tensors of reconstructions/predicted captions/etc.
-- - ```src/enhanced_recon_inference.ipynb``` will run the refinement stage for producing better looking reconstructions, outputting enhancedrecons.pt in the same folder used by recon_inference.ipynb
+- ```src/enhanced_recon_inference.ipynb``` will run the refinement stage for producing better looking reconstructions. These refined reconstructions are saved as enhancedrecons.pt in the same folder used by recon_inference.ipynb, whereas the unrefined reconstructions get saved as recons.pt
 - ```src/final_evaluations.ipynb``` will visualize the saved reconstructions and compute quantitative metrics.
 - See .slurm files for example scripts for running the .ipynb notebooks as batch jobs submitted to Slurm job scheduling.
 
