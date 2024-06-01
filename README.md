@@ -47,6 +47,7 @@ MindEye2 consists of three main jupyter notebooks, "Train.ipynb" for training Mi
     - To train a single-subject model, set ```--no-multi_subject``` and ```--subj=#``` where # is the subject from NSD you wish to train
     - To train a multi-subject model (i.e., pretraining), set ```--multi_subject``` and ```--subj=#``` where # is the one subject out of 8 NSD subjects to **not** include in the pretraining.
     - To fine-tune from a multi-subject model, set ```--no-multi_subject``` and ```--multisubject_ckpt=path_to_your_pretrained_ckpt_folder```
+    - Note if you are running multi-gpu, you need to first set your accelerate to use deepspeed stage 2 (with cpu offloading) via "accelerate config" in terminal ([example](https://i.imgur.com/iIbvcPq.png))
 - ```src/recon_inference.ipynb``` will run inference on a pretrained model, outputting tensors of reconstructions/predicted captions/etc.
 - ```src/final_evaluations.ipynb``` will visualize reconstructions output from ```src/recon_inference``` and compute quantitative metrics.
 - See .slurm files for example scripts for running the .ipynb notebooks as batch jobs submitted to Slurm job scheduling.
