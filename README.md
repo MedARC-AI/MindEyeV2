@@ -6,14 +6,16 @@
 
 ## Installation
 
-1. Git clone this repository:
+1. Agree to the Natural Scenes Dataset's [Terms and Conditions](https://cvnlab.slite.page/p/IB6BSeW_7o/Terms-and-Conditions) and fill out the [NSD Data Access form](https://forms.gle/xue2bCdM9LaFNMeb7)
+
+2. Git clone this repository:
 
 ```
 git clone https://github.com/MedARC-AI/MindEyeV2.git
 cd MindEyeV2
 ```
 
-2. Download https://huggingface.co/datasets/pscotti/mindeyev2 and place them in the same folder as your git clone.
+3. Download https://huggingface.co/datasets/pscotti/mindeyev2 contents into the src folder from your git clone.
 
 Warning: **Cloning the entire huggingface dataset will be over 100 GB of data!**
 
@@ -36,7 +38,7 @@ def download_files(repo_id, branch, exclude_dirs, exclude_files, include_specifi
 download_files(repo_id, branch, exclude_dirs, exclude_files, include_specific_files)
 ```
 
-3. Run ```. src/setup.sh``` to install a new "fmri" virtual environment. Make sure the virtual environment is activated with "source fmri/bin/activate".
+4. Run ```. src/setup.sh``` to install a new "fmri" virtual environment. Make sure the virtual environment is activated with "source fmri/bin/activate".
 
 ## Usage
 
