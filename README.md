@@ -17,7 +17,7 @@ cd MindEyeV2
 
 3. Download https://huggingface.co/datasets/pscotti/mindeyev2 contents into the src folder from your git clone.
 
-Warning: **Cloning the entire huggingface dataset will be over 100 GB of data!**
+Warning: Cloning the entire huggingface dataset will be over 100 GB of data!
 
 The below code will download the subset of files required to run all our training / inference / evaluation code (does not download pretrained models).
 
