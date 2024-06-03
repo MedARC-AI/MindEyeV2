@@ -25,24 +25,24 @@ from huggingface_hub import list_repo_files, hf_hub_download
 
 repo_id, branch, exclude_dirs, exclude_files = "pscotti/mindeyev2", "main", ["train_logs", "evals"], ["human_trials_mindeye2.ipynb", "subj01_annots.npy", "shared1000.npy"]
 
-def download_files(repo_id, branch, exclude_dirs):
+include_specific_files = ["evals/all_images.pt", "evals/all_captions.pt", "evals/all_git_generated_captions.pt"]
+
+def download_files(repo_id, branch, exclude_dirs, exclude_files, include_specific_files):
     files = list_repo_files(repo_id, repo_type="dataset", revision=branch)
     for file_path in files:
-        if not any(ex_dir in file_path for ex_dir in exclude_dirs) and not any(ex_file in file_path for ex_file in exclude_files):
-            local_path = os.path.join(repo_id.split("/")[1], file_path)
-            os.makedirs(os.path.dirname(local_path), exist_ok=True)
-            hf_hub_download(repo_id, filename=file_path, repo_type="dataset", revision=branch, local_dir=os.path.dirname(local_path))
+        if (not any(ex_dir in file_path for ex_dir in exclude_dirs) or file_path in include_specific_files) and not any(ex_file in file_path for ex_file in exclude_files):
+            hf_hub_download(repo_id, filename=file_path, repo_type="dataset", revision=branch, local_dir=os.getcwd())
 
-download_files(repo_id, branch, exclude_dirs)
+download_files(repo_id, branch, exclude_dirs, exclude_files, include_specific_files)
 ```
 
 3. Run ```. src/setup.sh``` to install a new "fmri" virtual environment. Make sure the virtual environment is activated with "source fmri/bin/activate".
 
 ## Usage
 
-MindEye2 consists of three main jupyter notebooks, "Train.ipynb" for training/fine-tuning, "recon_inference.ipynb" for doing inference on MindEye2 ckpts, and "final-evaluations.ipynb" for visualizing reconstructions and computing quantitative evalutions. 
+MindEye2 consists of four main jupyter notebooks, "Train.ipynb" does training/fine-tuning, "recon_inference.ipynb" does inference on MindEye2 ckpts and outputs unrefined reconstructions, "enhanced_recon_inference.ipynb" does reconstruction refinement using predicted image captions, and "final_evaluations.ipynb" visualizes reconstructions and computes quantitative evalutions. 
 
-These files can be run as Jupyter notebooks or can be converted to .py files with configuration specified via argparser. If you are training MindEye2 on a single GPU, expect that pre-training and fine-tuning both take approximately 1 day to complete.
+These files can be run as Jupyter notebooks or can be converted to .py files with configuration specified via argparser. If you are training MindEye2 on a single GPU on the full 40 sessions, expect that pre-training and fine-tuning both take approximately 1 day to complete.
 
 - ```src/Train.ipynb``` trains models (single-subject or multi-subject depending on your config). Check the argparser arguments to specify how you want to train the model (e.g., ```--num_sessions=1``` to train with 1-hour of data).
     - Final models used in the paper were trained on an 8xA100 80GB node and will OOM on weaker compute. You can train the model on weaker compute with very minimal performance impact by changing certain model arguments: We recommend lowering hidden_dim to 1024 (or even 512), removing the low-level submodule (``--no-blurry_recon``), and lowering the batch size.
@@ -51,7 +51,8 @@ These files can be run as Jupyter notebooks or can be converted to .py files wit
     - To fine-tune from a multi-subject model, set ```--no-multi_subject``` and ```--multisubject_ckpt=path_to_your_pretrained_ckpt_folder```
     - Note if you are running multi-gpu, you need to first set your accelerate to use deepspeed stage 2 (with cpu offloading) via "accelerate config" in terminal ([example](https://i.imgur.com/iIbvcPq.png))
 - ```src/recon_inference.ipynb``` will run inference on a pretrained model, outputting tensors of reconstructions/predicted captions/etc.
-- ```src/final_evaluations.ipynb``` will visualize reconstructions output from ```src/recon_inference``` and compute quantitative metrics.
+- ```src/enhanced_recon_inference.ipynb``` will run the refinement stage for producing better looking reconstructions. These refined reconstructions are saved as *enhancedrecons.pt in the same folder used by recon_inference.ipynb. The unrefined reconstructions were saved as *recons.pt as part of the recon_inference.ipynb notebook.
+- ```src/final_evaluations.ipynb``` will visualize the saved reconstructions and compute quantitative metrics.
 - See .slurm files for example scripts for running the .ipynb notebooks as batch jobs submitted to Slurm job scheduling.
 
 ## FAQ
@@ -86,9 +87,9 @@ Below is the lookup table for these arrays, with variables referenced from the N
 16 = IS_SHARED1000
 ```
 
--1 values in these arrays should be interpreted as NaNs.
-
 E.g., behav[0,:,9] corresponds to the 1st sample in the current batch's corresponding response time for the participant to press a button for that image.
+
+-1 values in these arrays should be interpreted as NaNs.
 
 past_behav gives you the behavioral information for samples corresponding the immediate previous timepoints samples.
 
@@ -97,6 +98,31 @@ future_behav gives you the behavioral information for samples corresponding to t
 old_behav gives you the behavioral information for the other repetitions of the given sample (remember to ignore -1s).
 
 The code to create the above webdatasets and the hdf5 full of voxel brain activations can be found in src/dataset_creation.ipynb.
+
+3. Where are the pretrained models? What are their configs?
+
+The pretrained models can be downloaded from huggingface (https://huggingface.co/datasets/pscotti/mindeyev2/tree/main/train_logs) and contain various model checkpoints following pre-training and following fine-tuning.
+
+`final_multisubject_subj0#` refer to ckpts after pre-training MindEye2 on all subjects except for the subject listed in the filename. E.g., `final_multisubject_subj01` is the model pre-trained on subjects 2, 3, 4, 5, 6, 7, and 8 from NSD.
+
+```
+accelerate launch --num_processes=$(($NUM_GPUS * $COUNT_NODE)) --num_machines=$COUNT_NODE --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --mixed_precision=fp16 Train.py --model_name=final_multisubject_subj0# --multi_subject --subj=# --batch_size=42 --max_lr=3e-4 --mixup_pct=.33 --num_epochs=300 --use_prior --prior_scale=30 --clip_scale=1 --blurry_recon --blur_scale=.5 --no-use_image_aug --n_blocks=4 --hidden_dim=4096 --num_sessions=40
+```
+
+`final_subj0#_pretrained_40sess_24bs` refer to ckpts after fine-tuning MindEye2 on the training data for the subject listed in the filename, initializing the starting point of the model from the ckpt saved from `final_multisubject_subj0#`.
+
+```
+accelerate launch --num_processes=$(($NUM_GPUS * $COUNT_NODE)) --num_machines=$COUNT_NODE --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --mixed_precision=fp16 Train.py --model_name=final_subj0#_pretrained_40sess_24bs --no-multi_subject --subj=# --batch_size=24 --max_lr=3e-4 --mixup_pct=.33 --num_epochs=150 --use_prior --prior_scale=30 --clip_scale=1 --blurry_recon --blur_scale=.5 --no-use_image_aug --n_blocks=4 --hidden_dim=4096 --num_sessions=40 --multisubject_ckpt=../train_logs/final_multisubject_subj0#
+```
+
+`final_subj0#_pretrained_1sess_24bs` refer to the same procedure as above but fine-tuned on only the first session of the subject's data. 
+
+`multisubject_subj01_1024hid_nolow_300ep` is the same as `final_multisubject_subj01` but pretrained using a less intensive pipeline where the low-level module was disabled and the hidden dimensionality was lowered from 4096 to 1024. These changes very minimally affected reconstruction and retrieval performance metrics and have the benefit of being much less computationally intensive to train.
+
+```
+accelerate launch --num_processes=$(($NUM_GPUS * $COUNT_NODE)) --num_machines=$COUNT_NODE --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --mixed_precision=fp16 Train.py --model_name=multisubject_subj01_1024hid_nolow_300ep --multi_subject --subj=1 --batch_size=42 --max_lr=3e-4 --mixup_pct=.33 --num_epochs=300 --use_prior --prior_scale=30 --clip_scale=1 --no-blurry_recon --blur_scale=.5 --no-use_image_aug --n_blocks=4 --hidden_dim=1024 --num_sessions=40
+```
+
 
 ## Citation
 
