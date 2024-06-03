@@ -12,7 +12,6 @@
 #SBATCH --exclusive
 
 # Make sure you activate your fmri environment created from src/setup.sh
-source ~/.bashrc
 cd /weka/proj-fmri/paulscotti/MindEyeV2/src
 source fmri/bin/activate
 
