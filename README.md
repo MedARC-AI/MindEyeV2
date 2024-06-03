@@ -12,7 +12,7 @@
 
 ```
 git clone https://github.com/MedARC-AI/MindEyeV2.git
-cd MindEyeV2
+cd MindEyeV2/src
 ```
 
 3. Download https://huggingface.co/datasets/pscotti/mindeyev2 contents into the src folder from your git clone.
