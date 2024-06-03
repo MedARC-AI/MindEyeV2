@@ -69,16 +69,16 @@ MindEye2 achieves SOTA reconstruction and retrieval performance compared to past
 
 The pretrained models can be downloaded from huggingface (https://huggingface.co/datasets/pscotti/mindeyev2/tree/main/train_logs) and contain various model checkpoints following pre-training and following fine-tuning.
 
-`final_multisubject_subj0#` refer to ckpts after pre-training MindEye2 on all subjects except for the subject listed in the filename. E.g., `final_multisubject_subj01` is the model pre-trained on subjects 2, 3, 4, 5, 6, 7, and 8 from NSD.
+`final_multisubject_subj0#` refer to ckpts after pre-training MindEye2 on all subjects except for the subject listed in the filename. E.g., `final_multisubject_subj01` is the model pre-trained on subjects 2, 3, 4, 5, 6, 7, and 8 from NSD. Below are some additional details for the configs used in argparser when training the model:
 
 ```
-accelerate launch --num_processes=$(($NUM_GPUS * $COUNT_NODE)) --num_machines=$COUNT_NODE --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --mixed_precision=fp16 Train.py --model_name=final_multisubject_subj0# --multi_subject --subj=# --batch_size=42 --max_lr=3e-4 --mixup_pct=.33 --num_epochs=300 --use_prior --prior_scale=30 --clip_scale=1 --blurry_recon --blur_scale=.5 --no-use_image_aug --n_blocks=4 --hidden_dim=4096 --num_sessions=40
+accelerate launch --mixed_precision=fp16 Train.py --model_name=final_multisubject_subj0# --multi_subject --subj=# --batch_size=42 --max_lr=3e-4 --mixup_pct=.33 --num_epochs=300 --use_prior --prior_scale=30 --clip_scale=1 --blurry_recon --blur_scale=.5 --no-use_image_aug --n_blocks=4 --hidden_dim=4096 --num_sessions=40
 ```
 
 `final_subj0#_pretrained_40sess_24bs` refer to ckpts after fine-tuning MindEye2 on the training data for the subject listed in the filename, initializing the starting point of the model from the ckpt saved from `final_multisubject_subj0#`.
 
 ```
-accelerate launch --num_processes=$(($NUM_GPUS * $COUNT_NODE)) --num_machines=$COUNT_NODE --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --mixed_precision=fp16 Train.py --model_name=final_subj0#_pretrained_40sess_24bs --no-multi_subject --subj=# --batch_size=24 --max_lr=3e-4 --mixup_pct=.33 --num_epochs=150 --use_prior --prior_scale=30 --clip_scale=1 --blurry_recon --blur_scale=.5 --no-use_image_aug --n_blocks=4 --hidden_dim=4096 --num_sessions=40 --multisubject_ckpt=../train_logs/final_multisubject_subj0#
+accelerate launch --mixed_precision=fp16 Train.py --model_name=final_subj0#_pretrained_40sess_24bs --no-multi_subject --subj=# --batch_size=24 --max_lr=3e-4 --mixup_pct=.33 --num_epochs=150 --use_prior --prior_scale=30 --clip_scale=1 --blurry_recon --blur_scale=.5 --no-use_image_aug --n_blocks=4 --hidden_dim=4096 --num_sessions=40 --multisubject_ckpt=../train_logs/final_multisubject_subj0#
 ```
 
 `final_subj0#_pretrained_1sess_24bs` refer to the same procedure as above but fine-tuned on only the first session of the subject's data. 
@@ -86,7 +86,7 @@ accelerate launch --num_processes=$(($NUM_GPUS * $COUNT_NODE)) --num_machines=$C
 `multisubject_subj01_1024hid_nolow_300ep` is the same as `final_multisubject_subj01` but pretrained using a less intensive pipeline where the low-level module was disabled and the hidden dimensionality was lowered from 4096 to 1024. These changes very minimally affected reconstruction and retrieval performance metrics and have the benefit of being much less computationally intensive to train.
 
 ```
-accelerate launch --num_processes=$(($NUM_GPUS * $COUNT_NODE)) --num_machines=$COUNT_NODE --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --mixed_precision=fp16 Train.py --model_name=multisubject_subj01_1024hid_nolow_300ep --multi_subject --subj=1 --batch_size=42 --max_lr=3e-4 --mixup_pct=.33 --num_epochs=300 --use_prior --prior_scale=30 --clip_scale=1 --no-blurry_recon --blur_scale=.5 --no-use_image_aug --n_blocks=4 --hidden_dim=1024 --num_sessions=40
+accelerate launch --mixed_precision=fp16 Train.py --model_name=multisubject_subj01_1024hid_nolow_300ep --multi_subject --subj=1 --batch_size=42 --max_lr=3e-4 --mixup_pct=.33 --num_epochs=300 --use_prior --prior_scale=30 --clip_scale=1 --no-blurry_recon --blur_scale=.5 --no-use_image_aug --n_blocks=4 --hidden_dim=1024 --num_sessions=40
 ```
 
 ### What are the "behav", "past_behav", "future_behav", "old_behav" arrays?
