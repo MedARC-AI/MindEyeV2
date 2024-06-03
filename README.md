@@ -72,7 +72,7 @@ The pretrained models can be downloaded from huggingface (https://huggingface.co
 `final_multisubject_subj0#` refer to ckpts after pre-training MindEye2 on all subjects except for the subject listed in the filename. E.g., `final_multisubject_subj01` is the model pre-trained on subjects 2, 3, 4, 5, 6, 7, and 8 from NSD. Below are some additional details for the configs used in argparser when training the model:
 
 ```
-accelerate launch --mixed_precision=fp16 Train.py --model_name=final_multisubject_subj0# --multi_subject --subj=# --batch_size=42 --max_lr=3e-4 --mixup_pct=.33 --num_epochs=300 --use_prior --prior_scale=30 --clip_scale=1 --blurry_recon --blur_scale=.5 --no-use_image_aug --n_blocks=4 --hidden_dim=4096 --num_sessions=40
+accelerate launch --mixed_precision=fp16 Train.py --model_name=final_multisubject_subj0# --multi_subject --subj=# --batch_size=42 --max_lr=3e-4 --mixup_pct=.33 --num_epochs=150 --use_prior --prior_scale=30 --clip_scale=1 --blurry_recon --blur_scale=.5 --no-use_image_aug --n_blocks=4 --hidden_dim=4096 --num_sessions=40
 ```
 
 `final_subj0#_pretrained_40sess_24bs` refer to ckpts after fine-tuning MindEye2 on the training data for the subject listed in the filename, initializing the starting point of the model from the ckpt saved from `final_multisubject_subj0#`.
@@ -87,7 +87,7 @@ accelerate launch --mixed_precision=fp16 Train.py --model_name=final_subj0#_pret
 accelerate launch --mixed_precision=fp16 Train.py --model_name=final_subj0#_pretrained_1sess_24bs --no-multi_subject --subj=# --batch_size=24 --max_lr=3e-4 --mixup_pct=.33 --num_epochs=150 --use_prior --prior_scale=30 --clip_scale=1 --blurry_recon --blur_scale=.5 --no-use_image_aug --n_blocks=4 --hidden_dim=4096 --num_sessions=1 --multisubject_ckpt=../train_logs/final_multisubject_subj0#
 ```
 
-`multisubject_subj01_1024hid_nolow_300ep` is the same as `final_multisubject_subj01` but pretrained using a less intensive pipeline where the low-level module was disabled and the hidden dimensionality was lowered from 4096 to 1024. These changes very minimally affected reconstruction and retrieval performance metrics and have the benefit of being much less computationally intensive to train.
+`multisubject_subj01_1024hid_nolow_300ep` is the same as `final_multisubject_subj01` but pretrained using a less intensive pipeline where the low-level module was disabled and the hidden dimensionality was lowered from 4096 to 1024. These changes very minimally affected reconstruction and retrieval performance metrics and have the benefit of being much less computationally intensive to train. We set num_epochs=300 for this model but I do not think it would have made any difference if we had set it to num_epochs=150 instead, like the above models.
 
 ```
 accelerate launch --mixed_precision=fp16 Train.py --model_name=multisubject_subj01_1024hid_nolow_300ep --multi_subject --subj=1 --batch_size=42 --max_lr=3e-4 --mixup_pct=.33 --num_epochs=300 --use_prior --prior_scale=30 --clip_scale=1 --no-blurry_recon --blur_scale=.5 --no-use_image_aug --n_blocks=4 --hidden_dim=1024 --num_sessions=40
