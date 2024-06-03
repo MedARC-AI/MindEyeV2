@@ -1,6 +1,6 @@
 # MindEye2
 
-**Paper (accepted to ICML 2024): https://arxiv.org/abs/2403.11207**
+**Paper (ICML 2024): https://arxiv.org/abs/2403.11207**
 
 ![](figs/recon_comparison_small_alt.png)<br>
 
