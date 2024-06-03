@@ -38,7 +38,7 @@ def download_files(repo_id, branch, exclude_dirs, exclude_files, include_specifi
 download_files(repo_id, branch, exclude_dirs, exclude_files, include_specific_files)
 ```
 
-4. Run ```. src/setup.sh``` to install a new "fmri" virtual environment. Make sure the virtual environment is activated with "source fmri/bin/activate".
+4. Run ```. setup.sh``` to install a new "fmri" virtual environment. Make sure the virtual environment is activated with "source fmri/bin/activate".
 
 ## Usage
 
