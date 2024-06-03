@@ -11,8 +11,11 @@
 #SBATCH --no-requeue
 #SBATCH --exclusive
 
-source ~/.bashrc
+# Make sure you activate your fmri environment created from src/setup.sh
 cd /weka/proj-fmri/paulscotti/MindEyeV2/src
+source fmri/bin/activate
+
+# The following line converts your jupyter notebook into a python script runnable with Slurm
 jupyter nbconvert Train.ipynb --to python
 
 export NUM_GPUS=1  # Set to equal gres=gpu:#!
