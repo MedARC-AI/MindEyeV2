@@ -254,6 +254,7 @@ def select_annotations(annots, random=True):
     return txt
 
 from generative_models.sgm.util import append_dims
+
 def unclip_recon(x, diffusion_engine, vector_suffix,
                  num_samples=1, offset_noise_level=0.04):
     assert x.ndim==3
@@ -422,50 +423,88 @@ def load_nsd_synthetic(subject, average=False, nest=False, data_root="../dataset
     print(x.shape, y.shape)
     return x, y    
 
-#subject: subject index between 1-3, or the subject identifier: CO, LF, TN
+#subject: subject index between 1-3, or the subject identifier: subj01, subj02, subj03. These are NOT the NSD subjects as this is a different datasets
 #mode: vision, imagery
 #mask: True or False, if true masks the betas to visual cortex, otherwise returns the whole scanned region
-#image_type: stimuli, cue
+#stimtype: stimuli, cue, object
     # - stimuli will return the images with content that was either seen or imagined, this is what was presented to the subject in vision trials
     # - cue will return only the background images with the cue and no content, this is what was presented to the subject in imagery trials
+    # - object will return only the object in the image with no cue or location brackets. This should be used for model training where we dont want the model to learn the brackets or the cue.
 #average: whether to average across trials, will produce x that is (stimuli, 1, voxels)
 #nest: whether to nest the data according to stimuli, will produce x that is (stimuli, trials, voxels)
     # WARNING: Not all stimuli have the same number of repeats, so the middle dimension for the trial repetitions will contain empty values for some stimuli, be sure to account for this when loading
-def load_imageryrf(subject, mode, mask=True, image_type="stimuli", average=False, nest=False, data_root="../dataset/"):
+def load_imageryrf(subject, mode, mask=True, stimtype="object", average=False, nest=False, split=False, data_root="../dataset/"):
+    
     # This file has a bunch of information about the stimuli and cue associations that will make loading it easier
     img_conditional_file = f"{data_root}/imageryrf_single_trial/stimuli/imageryrf_conditions.pkl3"
     ex_file = open(img_conditional_file, 'rb')
     conditional_dict = pd.compat.pickle_compat.load(ex_file) 
     ex_file.close()
+    stimuli_metadata = conditional_dict['stimuli_metadata']
     # If subject identifier is int, grab the string identifer
     if isinstance(subject, int):
-        subject = ["CO","LF","TN"][subject-1] 
+        subject = f"subj0{subject}"
     subject_cond = conditional_dict[subject]
     # Indicates what experiments trials belong to
     exps = subject_cond['experiment_cond']
     # Maps the cues to the stimulus image information
     image_map  = subject_cond['stimuli_cond'].to(int)
+    # Identify and condition on the stimuli that will be the test set
+    test_idx = torch.tensor([0,7,15,23,35,47,51,63])
+    object_idx = torch.tensor(stimuli_metadata['object_idx'].values)
+    test_indices = [idx for idx, value in enumerate(object_idx) if value in test_idx]
+    
     # Organize the indices of the trials according to the modality and the type of stimuli
     cond_idx = {
     'vision': np.arange(len(exps))[np.char.find(exps, 'pcp') != -1],
-    'imagery': np.arange(len(exps))[np.char.find(exps, 'img') != -1]}
+    'imagery': np.arange(len(exps))[np.char.find(exps, 'img') != -1],
+    'all': np.arange(len(exps)),
+    'visiontrain': np.arange(len(exps))[np.logical_and(np.char.find(exps, 'pcp') != -1, ~np.isin(image_map, test_indices))],
+    'visiontest': np.arange(len(exps))[np.logical_and(np.char.find(exps, 'pcp') != -1, np.isin(image_map, test_indices))],
+    'imagerytrain': np.arange(len(exps))[np.logical_and(np.char.find(exps, 'img') != -1, ~np.isin(image_map, test_indices))],
+    'imagerytest': np.arange(len(exps))[np.logical_and(np.char.find(exps, 'img') != -1, np.isin(image_map, test_indices))],
+    'alltrain': np.arange(len(exps))[~np.isin(image_map, test_indices)],
+    'alltest': np.arange(len(exps))[np.isin(image_map, test_indices)]}
     # Load normalized betas
     if mask:
         x = torch.load(f"{data_root}/imageryrf_single_trial/{subject}/single_trial_betas_masked.pt").requires_grad_(False).to("cpu")
     else:
         x = torch.load(f"{data_root}/imageryrf_single_trial/{subject}/single_trial_betas.pt").requires_grad_(False).to("cpu")
+    y = torch.load(f"{data_root}/imageryrf_single_trial/stimuli/{stimtype}_images.pt").requires_grad_(False).to("cpu")
     # Find the stimuli indices conditioned on the mode of trials we want to load
-    conditionals = image_map[cond_idx[mode]]
-    # Stimuli file is of shape (18,3,425,425), these can be converted back into PIL images using transforms.ToPILImage()
-    y = torch.load(f"{data_root}/imageryrf_single_trial/stimuli/{image_type}_images.pt").requires_grad_(False).to("cpu")
-    # Prune the beta file down to specific experimental mode/stimuli type
-    x = x[cond_idx[mode]]
+    if split:
+        conditionals_train = image_map[cond_idx[mode+'train']]
+        conditionals_test = image_map[cond_idx[mode+'test']]
+        x_train = x[cond_idx[mode+'train']]
+        x_test = x[cond_idx[mode+'test']]
+        y_train = y[~torch.isin(torch.arange(len(y)), torch.tensor(test_indices))]
+        y_test = y[test_indices]
+    else:
+        conditionals = image_map[cond_idx[mode]]
+        # Prune the beta file down to specific experimental mode/stimuli type
+        x = x[cond_idx[mode]]
+        
     # Average or nest the betas across trials
     if average or nest:
-        x, y, sample_count = condition_average(x, y, conditionals, nest=nest)
+        if split:
+            x_train, y_train, sample_count = condition_average(x_train, y_train, conditionals_train, nest=nest)
+            x_test, y_test, sample_count = condition_average(x_test, y_test, conditionals_test, nest=nest)
+        else:
+            x, y, sample_count = condition_average(x, y, conditionals, nest=nest)
     else:
-        x = x.reshape((x.shape[0], 1, x.shape[1]))
-        y = y[conditionals]
-
-    print(x.shape, y.shape)
-    return x, y
+        if split:
+            x_train = x_train.reshape((x_train.shape[0], x_train.shape[1]))
+            x_test = x_test.reshape((x_test.shape[0], x_test.shape[1]))
+            y_train = y[conditionals_train]
+            y_test = y[conditionals_test]
+            
+        else:
+            x = x.reshape((x.shape[0], x.shape[1]))
+            y = y[conditionals]
+    
+    if split:
+        print(x_train.shape, y_train.shape, x_test.shape, y_test.shape)
+        return x_train, y_train, x_test, y_test
+    else:
+        print(x.shape, y.shape)
+        return x, y
