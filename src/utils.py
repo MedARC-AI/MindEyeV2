@@ -296,6 +296,106 @@ def unclip_recon(x, diffusion_engine, vector_suffix,
         samples = torch.clamp((samples_x*.8+.2), min=0.0, max=1.0)
         # samples = torch.clamp((samples_x + .5) / 2.0, min=0.0, max=1.0)
         return samples
+    
+def versatile_diffusion_recon(brain_clip_embeddings, 
+                              proj_embeddings, 
+                              img_lowlevel, 
+                              text_token,
+                              img2img_strength, 
+                              clip_extractor, 
+                              vae, 
+                              unet, 
+                              noise_scheduler, 
+                              generator,
+                              num_inference_steps,
+                              recons_per_sample=16,
+                              guidance_scale = 3.5,
+                              seed=42):
+    for samp in range(len(brain_clip_embeddings)):
+        brain_clip_embeddings[samp] = brain_clip_embeddings[samp]/(brain_clip_embeddings[samp,0].norm(dim=-1).reshape(-1, 1, 1) + 1e-6)
+        
+    input_embedding = brain_clip_embeddings
+    if text_token is not None:
+        prompt_embeds = text_token.repeat(recons_per_sample, 1, 1)
+    else:
+        prompt_embeds = torch.zeros(len(input_embedding),77,768)
+        
+    if unet is not None:
+        do_classifier_free_guidance = guidance_scale > 1.0
+        vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
+        height = unet.config.sample_size * vae_scale_factor
+        width = unet.config.sample_size * vae_scale_factor
+    
+    if do_classifier_free_guidance:
+        input_embedding = torch.cat([torch.zeros_like(input_embedding), input_embedding]).to(device).to(unet.dtype)
+        prompt_embeds = torch.cat([torch.zeros_like(prompt_embeds), prompt_embeds]).to(device).to(unet.dtype)
+    
+    # dual_prompt_embeddings
+    input_embedding = torch.cat([prompt_embeds, input_embedding], dim=1)
+    # 4. Prepare timesteps
+    noise_scheduler.set_timesteps(num_inference_steps=num_inference_steps, device=device)
+
+    # 5b. Prepare latent variables
+    batch_size = input_embedding.shape[0] // 2 # divide by 2 bc we doubled it for classifier-free guidance
+    shape = (batch_size, unet.in_channels, height // vae_scale_factor, width // vae_scale_factor)
+    if img_lowlevel is not None: # use img_lowlevel for img2img initialization
+        img_lowlevel = torch.nn.functional.interpolate(img_lowlevel, size=(512, 512), mode='bilinear', align_corners=False)
+        init_timestep = min(int(num_inference_steps * img2img_strength), num_inference_steps)
+        t_start = max(num_inference_steps - init_timestep, 0)
+        timesteps = noise_scheduler.timesteps[t_start:]
+        latent_timestep = timesteps[:1].repeat(batch_size)
+        
+        img_lowlevel_embeddings = clip_extractor.normalize(img_lowlevel)
+        init_latents = vae.encode(img_lowlevel_embeddings.to(device).to(vae.dtype)).latent_dist.sample(generator)
+        init_latents = vae.config.scaling_factor * init_latents
+        init_latents = init_latents.repeat(recons_per_sample, 1, 1, 1)
+
+        noise = torch.randn([recons_per_sample, 4, 64, 64], device=device, 
+                            generator=generator, dtype=input_embedding.dtype)
+        init_latents = noise_scheduler.add_noise(init_latents, noise, latent_timestep)
+        latents = init_latents
+    else:
+        timesteps = noise_scheduler.timesteps
+        latents = torch.randn([recons_per_sample, 4, 64, 64], device=device,
+                                generator=generator, dtype=input_embedding.dtype)
+        latents = latents * noise_scheduler.init_noise_sigma
+    # 7. Denoising loop
+    for i, t in enumerate(timesteps):
+        # expand the latents if we are doing classifier free guidance
+        latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+        latent_model_input = noise_scheduler.scale_model_input(latent_model_input, t).to(device)
+        noise_pred = unet(latent_model_input, t, encoder_hidden_states=input_embedding).sample
+        # perform guidance
+        if do_classifier_free_guidance:
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+        # compute the previous noisy sample x_t -> x_t-1
+        latents = noise_scheduler.step(noise_pred, t, latents).prev_sample
+    recons = decode_latents(latents,vae).detach().cpu()
+    
+    brain_recons = recons.unsqueeze(0)
+    
+    # pick best reconstruction out of several
+    best_picks = np.zeros(1).astype(np.int16)
+
+    v2c_reference_out = nn.functional.normalize(proj_embeddings.view(len(proj_embeddings),-1),dim=-1)
+    sims=[]
+    for im in range(recons_per_sample): 
+        currecon = clip_extractor.embed_image(brain_recons[0,[im]].float()).to(proj_embeddings.device).to(proj_embeddings.dtype)
+        currecon = nn.functional.normalize(currecon.view(len(currecon),-1),dim=-1)
+        cursim = batchwise_cosine_similarity(v2c_reference_out,currecon)
+        sims.append(cursim.item())
+    best_picks[0] = int(np.nanargmax(sims))  
+     
+    recon_img = brain_recons[:, best_picks[0]]
+    
+    return recon_img, brain_recons, best_picks
+
+def decode_latents(latents,vae):
+    latents = 1 / 0.18215 * latents
+    image = vae.decode(latents).sample
+    image = (image / 2 + 0.5).clamp(0, 1)
+    return image
 
 #  Numpy Utility 
 def iterate_range(start, length, batchsize):
@@ -322,6 +422,135 @@ def soft_cont_loss(student_preds, teacher_preds, teacher_aug_preds, temp=0.125):
     loss = (loss1 + loss2)/2
     return loss
 
+def format_tiled_figure(images, captions, rows, cols, red_line_index=None, buffer=10, mode=0, title=None, font_size=60):
+    """
+    Assembles a tiled figure of images with optional captions and a red background behind a specified column or row.
+
+    :param images: List of PIL Image objects, ordered row-wise.
+    :param captions: List of captions, length and usage depends on mode.
+    :param rows: Number of rows in the image grid.
+    :param cols: Number of columns in the image grid.
+    :param red_line_index: Index of the row or column to highlight with a red background (0-indexed).
+    :param buffer: Buffer value in pixels for space between images.
+    :param mode: Mode of the figure assembly.
+    :param title: Title of the figure, used in mode 1 and mode 3.
+    :return: PIL Image object of the assembled figure.
+    """
+    
+    # Find the smallest width and height among all images
+    min_width, min_height = min(img.size for img in images)
+
+    # Resize all images to the smallest dimensions
+    images = [img.resize((min_width, min_height), Image.ANTIALIAS) for img in images]
+
+    # Font setup
+    # font_size = 60  # Base font size for readability
+    row_caption_font_size = font_size  
+    title_font_size = int(1.3 * font_size) 
+    title_font = ImageFont.truetype("arial.ttf", title_font_size)
+    row_caption_font = ImageFont.truetype("arial.ttf", row_caption_font_size)
+
+    # Calculate dimensions for the entire canvas
+    caption_height = row_caption_font_size if mode in [0, 1] else 0
+    title_height = int(title_font_size * 1.3) if mode in [1, 3] and title is not None or mode in [2] and captions is not None else 0  # Adjusted to include mode 3
+    row_title_width = int(row_caption_font_size * 1.5) if mode == 3 else 0
+    extra_buffer_w = buffer if (red_line_index is not None and mode in [0, 1, 2]) else 0
+    extra_buffer_h = buffer if (red_line_index is not None and mode == 3) else 0
+
+    # Calculate the total canvas width and height
+    total_width = cols * (min_width + buffer) + row_title_width + buffer + extra_buffer_w
+    total_height = rows * (min_height + buffer) + title_height + rows * caption_height + buffer + extra_buffer_h
+
+    # Create a new image with a white background
+    canvas = Image.new('RGB', (total_width, total_height), color='white')
+
+    # Prepare the drawing context
+    draw = ImageDraw.Draw(canvas)
+
+    # Draw the title for modes 1 and 3
+    if mode in [1, 3] and title is not None:  # Adjusted to include mode 3
+        text_width, text_height = draw.textsize(title, font=title_font)
+        draw.text(((total_width - text_width) // 2, (title_height - text_height) // 2), title, font=title_font, fill='black')
+
+    # Draw red background before placing images if a red line index is specified
+    if red_line_index is not None:
+        if mode in [0, 1, 2]:  # Red column
+            red_x = row_title_width + red_line_index * (min_width + buffer)
+            red_y = title_height
+            red_width = min_width + buffer * 2
+            red_height = total_height - title_height
+            canvas.paste(Image.new('RGB', (red_width, red_height), color='red'), (red_x, red_y))
+        elif mode == 3:  # Red row
+            red_x = row_title_width
+            red_y = title_height + red_line_index * (min_height + buffer)
+            red_width = total_width - row_title_width
+            red_height = min_height + buffer * 2
+            canvas.paste(Image.new('RGB', (red_width, red_height), color='red'), (red_x, red_y))
+
+    # Insert images into the canvas
+    for row in range(rows):
+        for col in range(cols):
+            idx = row * cols + col
+            if idx >= len(images):
+                continue
+
+            img = images[idx]
+            x = col * (min_width + buffer) + row_title_width + buffer
+            y = row * (min_height + buffer) + title_height + buffer
+
+            # Adjust the x position if there is a red column
+            if mode in [0, 1, 2] and red_line_index is not None and col > red_line_index:
+                x += extra_buffer_w
+
+            # Adjust the y position if there is a red row
+            if mode == 3 and red_line_index is not None and row > red_line_index:
+                y += extra_buffer_h
+
+            # Paste the image
+            canvas.paste(img, (x, y))
+    # Draw the vertical text for row titles if mode is 3
+    if mode == 3:
+        for row, caption in enumerate(captions):
+            # Calculate the caption size using the default font
+            width, height = row_caption_font.getsize(caption)
+
+            text_image = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(text_image)
+            draw.text((0, 0), text=caption, font=row_caption_font, fill='black')
+
+            # Rotate the text image to be vertical
+            text_image = text_image.rotate(90, expand=1)
+
+            # Calculate the y position for the vertical text
+            y = row * (min_height + buffer) + (min_width - width )//2 + title_height
+            if row > 0:
+                y += buffer
+
+            # Calculate the x position, accounting for the increased text size
+            x = 0
+
+            # Paste the rotated text image onto the canvas
+            canvas.paste(text_image, (x, y), text_image)
+
+    # Draw captions for each image for modes 0 and 1
+    if mode in [0, 1]:
+        for idx, caption in enumerate(captions):
+            col = idx % cols
+            row = idx // cols
+            text_width, text_height = draw.textsize(caption, font=row_caption_font)
+            x = col * (min_width + buffer) + row_title_width + buffer + (min_width - text_width) // 2
+            y = (row + 1) * (min_height + buffer) + title_height - text_height // 2
+            draw.text((x, y), caption, font=row_caption_font, fill='black')
+
+    # Draw column titles if mode is 2
+    if mode == 2:
+        for col, caption in enumerate(captions):
+            text_width, text_height = draw.textsize(caption, font=row_caption_font)
+            x = col * (min_width + buffer) + row_title_width + buffer + (min_width - text_width) // 2
+            y = buffer
+            draw.text((x, y), caption, font=row_caption_font, fill='black')
+
+    return canvas
 
 def condition_average(x, y, cond, nest=False):
     idx, idx_count = np.unique(cond, return_counts=True)
