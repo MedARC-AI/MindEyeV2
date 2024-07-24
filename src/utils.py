@@ -699,6 +699,7 @@ def load_imageryrf(subject, mode, mask=True, stimtype="object", average=False, n
         x = torch.load(f"{data_root}/imageryrf_single_trial/{subject}/single_trial_betas_masked.pt").requires_grad_(False).to("cpu")
     else:
         x = torch.load(f"{data_root}/imageryrf_single_trial/{subject}/single_trial_betas.pt").requires_grad_(False).to("cpu")
+    x = torch.where(torch.isnan(x), torch.zeros_like(x), x)
     y = torch.load(f"{data_root}/imageryrf_single_trial/stimuli/{stimtype}_images.pt").requires_grad_(False).to("cpu")
     # Find the stimuli indices conditioned on the mode of trials we want to load
     if split:
