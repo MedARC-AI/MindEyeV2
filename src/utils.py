@@ -574,6 +574,26 @@ def condition_average(x, y, cond, nest=False, num_reps=1000):
 
     return avg_x, y, len(idx_count)
 
+def condition_average_old(x, y, cond, nest=False):
+    idx, idx_count = np.unique(cond, return_counts=True)
+    idx_list = [np.array(cond)==i for i in np.sort(idx)]
+    if nest:
+        avg_x = torch.zeros((len(idx), idx_count.max(), x.shape[1]), dtype=torch.float32)
+    else:
+        avg_x = torch.zeros((len(idx), 1, x.shape[1]), dtype=torch.float32)
+    arranged_y = torch.zeros((len(idx)), y.shape[1], y.shape[2], y.shape[3])
+    for i, m in enumerate(idx_list):
+        if nest:
+            if np.sum(m) == idx_count.max():
+                avg_x[i] = x[m]
+            else:
+                avg_x[i,:np.sum(m)] = x[m]
+        else:
+            avg_x[i] = torch.mean(x[m], axis=0)
+        arranged_y[i] = y[m[0]]
+
+    return avg_x, y, len(idx_count)
+
 #subject: nsd subject index between 1-8
 #mode: vision, imagery
 #stimtype: all, simple, complex, concepts
@@ -719,10 +739,10 @@ def load_imageryrf(subject, mode, mask=True, stimtype="object", average=False, n
     # Average or nest the betas across trials
     if average or nest:
         if split:
-            x_train, y_train, sample_count = condition_average(x_train, y_train, conditionals_train, nest=nest)
-            x_test, y_test, sample_count = condition_average(x_test, y_test, conditionals_test, nest=nest)
+            x_train, y_train, sample_count = condition_average_old(x_train, y_train, conditionals_train, nest=nest)
+            x_test, y_test, sample_count = condition_average_old(x_test, y_test, conditionals_test, nest=nest)
         else:
-            x, y, sample_count = condition_average(x, y, conditionals, nest=nest)
+            x, y, sample_count = condition_average_old(x, y, conditionals, nest=nest)
     else:
         if split:
             x_train = x_train.reshape((x_train.shape[0], x_train.shape[1]))
