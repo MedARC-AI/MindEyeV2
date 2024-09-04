@@ -316,10 +316,11 @@ def versatile_diffusion_recon(brain_clip_embeddings,
         
     input_embedding = brain_clip_embeddings
     if text_token is not None:
-        prompt_embeds = text_token.repeat(recons_per_sample, 1, 1)
+        # prompt_embeds = text_token.repeat(recons_per_sample, 1, 1)
+        prompt_embeds = text_token.repeat(len(input_embedding), 77, 1)
     else:
         prompt_embeds = torch.zeros(len(input_embedding),77,768)
-        
+    
     if unet is not None:
         do_classifier_free_guidance = guidance_scale > 1.0
         vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
@@ -331,6 +332,8 @@ def versatile_diffusion_recon(brain_clip_embeddings,
         prompt_embeds = torch.cat([torch.zeros_like(prompt_embeds), prompt_embeds]).to(device).to(unet.dtype)
     
     # dual_prompt_embeddings
+    print(prompt_embeds.shape)
+    print(input_embedding.shape)
     input_embedding = torch.cat([prompt_embeds, input_embedding], dim=1)
     # 4. Prepare timesteps
     noise_scheduler.set_timesteps(num_inference_steps=num_inference_steps, device=device)
@@ -552,24 +555,22 @@ def format_tiled_figure(images, captions, rows, cols, red_line_index=None, buffe
 
     return canvas
 
-def condition_average(x, y, cond, nest=False, num_reps=1000):
+def condition_average(x, y, cond, nest=False):
     idx, idx_count = np.unique(cond, return_counts=True)
-    num_reps = min(num_reps, idx_count.max())
     idx_list = [np.array(cond)==i for i in np.sort(idx)]
     if nest:
-        avg_x = torch.zeros((len(idx), num_reps, x.shape[1]), dtype=torch.float32)
+        avg_x = torch.zeros((len(idx), idx_count.max(), x.shape[1]), dtype=torch.float32)
     else:
         avg_x = torch.zeros((len(idx), 1, x.shape[1]), dtype=torch.float32)
     arranged_y = torch.zeros((len(idx)), y.shape[1], y.shape[2], y.shape[3])
     for i, m in enumerate(idx_list):
-        num_reps = min(num_reps, len(m))
         if nest:
-            if np.sum(m) == num_reps:
+            if np.sum(m) == idx_count.max():
                 avg_x[i] = x[m]
             else:
-                avg_x[i,:max(np.sum(m), num_reps)] = x[m][:num_reps]
+                avg_x[i,:np.sum(m)] = x[m]
         else:
-            avg_x[i] = torch.mean(x[m][:num_reps], axis=0)
+            avg_x[i] = torch.mean(x[m], axis=0)
         arranged_y[i] = y[m[0]]
 
     return avg_x, y, len(idx_count)
@@ -580,7 +581,7 @@ def condition_average(x, y, cond, nest=False, num_reps=1000):
 #average: whether to average across trials, will produce x that is (stimuli, 1, voxels)
 #nest: whether to nest the data according to stimuli, will produce x that is (stimuli, trials, voxels)
 #data_root: path to where the dataset is saved.
-def load_nsd_mental_imagery(subject, mode, stimtype="all", average=False, num_reps = 16, nest=False, data_root="../dataset/"):
+def load_nsd_mental_imagery(subject, mode, stimtype="all", average=False, nest=False, data_root="../dataset/"):
     # This file has a bunch of information about the stimuli and cue associations that will make loading it easier
     img_stim_file = f"{data_root}/nsddata_stimuli/stimuli/nsdimagery_stimuli.pkl3"
     ex_file = open(img_stim_file, 'rb')
@@ -625,7 +626,7 @@ def load_nsd_mental_imagery(subject, mode, stimtype="all", average=False, num_re
 
     # Average or nest the betas across trials
     if average or nest:
-        x, y, sample_count = condition_average(x, y, conditionals, nest=nest, num_reps=num_reps)
+        x, y, sample_count = condition_average(x, y, conditionals, nest=nest)
     else:
         x = x.reshape((x.shape[0], 1, x.shape[1]))
         y = y[conditionals]
@@ -701,7 +702,6 @@ def load_imageryrf(subject, mode, mask=True, stimtype="object", average=False, n
         x = torch.load(f"{data_root}/imageryrf_single_trial/{subject}/single_trial_betas_masked.pt").requires_grad_(False).to("cpu")
     else:
         x = torch.load(f"{data_root}/imageryrf_single_trial/{subject}/single_trial_betas.pt").requires_grad_(False).to("cpu")
-    x = torch.where(torch.isnan(x), torch.zeros_like(x), x)
     y = torch.load(f"{data_root}/imageryrf_single_trial/stimuli/{stimtype}_images.pt").requires_grad_(False).to("cpu")
     # Find the stimuli indices conditioned on the mode of trials we want to load
     if split:
