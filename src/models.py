@@ -629,6 +629,151 @@ class PriorNetwork(nn.Module):
 
         return pred_image_embed
 
+class PriorNetwork_txt(nn.Module):
+    def __init__(
+        self,
+        dim,
+        num_timesteps = None,
+        num_time_embeds = 1,
+        # num_image_embeds = 1,
+        # num_brain_embeds = 1,
+        num_tokens = 77,
+        causal = True,
+        learned_query_mode = 'none',
+        **kwargs
+    ):
+        super().__init__()
+        self.dim = dim
+        self.num_time_embeds = num_time_embeds
+        self.continuous_embedded_time = not exists(num_timesteps)
+        self.learned_query_mode = learned_query_mode
+
+        self.to_time_embeds = nn.Sequential(
+            nn.Embedding(num_timesteps, dim * num_time_embeds) if exists(num_timesteps) else nn.Sequential(SinusoidalPosEmb(dim), MLP(dim, dim * num_time_embeds)), # also offer a continuous version of timestep embeddings, with a 2 layer MLP
+            Rearrange('b (n d) -> b n d', n = num_time_embeds)
+        )
+
+        if self.learned_query_mode == 'token':
+            self.learned_query = nn.Parameter(torch.randn(num_tokens, dim))
+        if self.learned_query_mode == 'pos_emb':
+            scale = dim ** -0.5
+            self.learned_query = nn.Parameter(torch.randn(num_tokens, dim) * scale)
+        if self.learned_query_mode == 'all_pos_emb':
+            scale = dim ** -0.5
+            self.learned_query = nn.Parameter(torch.randn(num_tokens*2+1, dim) * scale)
+        self.causal_transformer = FlaggedCausalTransformer(dim = dim, causal=causal, **kwargs)
+
+        self.null_brain_embeds = nn.Parameter(torch.randn(num_tokens, dim))
+        self.null_image_embed = nn.Parameter(torch.randn(num_tokens, dim))
+
+        self.num_tokens = num_tokens
+        self.self_cond = False
+
+    def forward_with_cond_scale(
+        self,
+        *args,
+        cond_scale = 1.,
+        **kwargs
+    ):
+        logits = self.forward(*args, **kwargs)
+
+        if cond_scale == 1:
+            return logits
+
+        null_logits = self.forward(*args, brain_cond_drop_prob = 1., image_cond_drop_prob = 1, **kwargs)
+        return null_logits + (logits - null_logits) * cond_scale
+
+    def forward(
+        self,
+        image_embed,
+        diffusion_timesteps,
+        *,
+        self_cond=None,
+        brain_embed=None,
+        text_embed=None,
+        brain_cond_drop_prob = 0.,
+        text_cond_drop_prob = None,
+        image_cond_drop_prob = 0.
+    ):
+        if text_embed is not None:
+            brain_embed = text_embed
+        if text_cond_drop_prob is not None:
+            brain_cond_drop_prob = text_cond_drop_prob
+        # WE MAY WANT THESE
+        # image_embed = image_embed.view(len(image_embed),-1,768)
+        # brain_embed = brain_embed.view(len(brain_embed),-1,768)
+        
+        # text_embed = text_embed.view(len(text_embed),-1,768)
+        # print(*image_embed.shape)  
+        # for image : [257,768]   for txt : [1,768]
+        # print(*image_embed.shape, image_embed.device, image_embed.dtype)
+        # print("image_embed shape:", image_embed.shape)
+
+        batch = text_embed.shape[0]
+        _, _, dim, device, dtype = *image_embed.shape, image_embed.device, image_embed.dtype
+        # num_time_embeds, num_image_embeds, num_brain_embeds = self.num_time_embeds, self.num_image_embeds, self.num_brain_embeds
+        
+        # classifier free guidance masks
+        brain_keep_mask = prob_mask_like((batch,), 1 - brain_cond_drop_prob, device = device)
+        brain_keep_mask = rearrange(brain_keep_mask, 'b -> b 1 1')
+
+        image_keep_mask = prob_mask_like((batch,), 1 - image_cond_drop_prob, device = device)
+        image_keep_mask = rearrange(image_keep_mask, 'b -> b 1 1')
+
+        # mask out brain embeddings with null brain embeddings
+
+        # import pdb; pdb.set_trace()
+        null_brain_embeds = self.null_brain_embeds.to(brain_embed.dtype)
+        brain_embed = torch.where(
+            brain_keep_mask,
+            brain_embed,
+            null_brain_embeds[None]
+        )
+
+        # mask out image embeddings with null image embeddings
+        null_image_embed = self.null_image_embed.to(image_embed.dtype)
+        image_embed = torch.where(
+            image_keep_mask,
+            image_embed,
+            null_image_embed[None]
+        )
+
+        # whether brain embedding is used for conditioning depends on whether brain encodings are available for attention (for classifier free guidance, even though it seems from the paper it was not used in the prior ddpm, as the objective is different)
+        # but let's just do it right
+        if self.continuous_embedded_time:
+            # if continuous cast to flat, else keep int for indexing embeddings
+            diffusion_timesteps = diffusion_timesteps.type(dtype)
+        time_embed = self.to_time_embeds(diffusion_timesteps)
+
+        if self.learned_query_mode == 'token':
+            learned_queries = repeat(self.learned_query, 'n d -> b n d', b = batch)
+        elif self.learned_query_mode == 'pos_emb':
+            pos_embs = repeat(self.learned_query, 'n d -> b n d', b = batch)
+            image_embed = image_embed + pos_embs
+            learned_queries = torch.empty((batch, 0, dim), device=brain_embed.device)
+        elif self.learned_query_mode == 'all_pos_emb':
+            pos_embs = repeat(self.learned_query, 'n d -> b n d', b = batch)
+            learned_queries = torch.empty((batch, 0, dim), device=brain_embed.device)
+        else:
+            learned_queries = torch.empty((batch, 0, dim), device=brain_embed.device)
+        
+        tokens = torch.cat((
+            brain_embed,  # 77
+            time_embed,  # 1
+            image_embed,  # 77
+            learned_queries  # 77
+        ), dim = -2)
+        if self.learned_query_mode == 'all_pos_emb':
+            tokens = tokens + pos_embs
+
+        # attend
+        tokens = self.causal_transformer(tokens)
+
+        # get learned query, which should predict the image embedding (per DDPM timestep)
+        pred_text_embed = tokens[..., -self.num_tokens:, :]
+
+        return pred_text_embed
+
 class FlaggedCausalTransformer(nn.Module):
     def __init__(
         self,
