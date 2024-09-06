@@ -32,7 +32,7 @@ echo WORLD_SIZE=${COUNT_NODE}
 model_name="subj01_40sess_dual"
 echo model_name=${model_name}
 accelerate launch --num_processes=$(($NUM_GPUS * $COUNT_NODE)) --num_machines=$COUNT_NODE --main_process_ip=$MASTER_ADDR \
-                --main_process_port=$MASTER_PORT --mixed_precision=fp16 Train_vd.py --data_path=/weka/proj-medarc/shared/mindeyev2_dataset \
+                --main_process_port=$MASTER_PORT --mixed_precision=fp16 Train_vd_dual.py --data_path=/weka/proj-medarc/shared/mindeyev2_dataset \
                 --cache_dir=/weka/proj-medarc/shared/cache --model_name=${model_name} --no-multi_subject --subj=1 --batch_size=${BATCH_SIZE} \
                 --seq_past=0 --seq_future=0 --use_prior --prior_scale=30 \
                 --max_lr=3e-4 --mixup_pct=.33 --num_epochs=150 --clip_scale=1 --blur_scale=.5 --no-use_image_aug \
