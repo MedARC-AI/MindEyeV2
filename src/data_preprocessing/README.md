@@ -1,4 +1,5 @@
-QUICK SETUPS:
+## EEG Preprocessing
+### QUICK SETUPS:
 
     1) Things- EEG2 Proposed Preprocessing
 

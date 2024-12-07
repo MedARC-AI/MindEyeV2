@@ -376,8 +376,8 @@ def saveData(save_dir,test_dict,train_dict):
     import os
     import numpy as np
 
-    file_name_test = 'preprocessed_eeg_test64.npy'
-    file_name_train = 'preprocessed_eeg_training64.npy'
+    file_name_test = 'preprocessed_eeg_test.npy'
+    file_name_train = 'preprocessed_eeg_training.npy'
     # Create the directory if not existing and save the data
     if os.path.isdir(save_dir) == False:
         os.makedirs(save_dir)

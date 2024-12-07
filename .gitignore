@@ -1,6 +1,10 @@
 wandb/
 train_logs/
 slurms/
+data/
+venv/
+fmri/
+evals/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
