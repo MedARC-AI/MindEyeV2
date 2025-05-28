@@ -1,6 +1,5 @@
 # %%
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import sys
 import json
 import pickle
@@ -48,75 +47,6 @@ accelerator = Accelerator(split_batches=False, mixed_precision="fp16")
 device = accelerator.device
 print("device:",device)
 
-# %%
-def load_nsd_mental_imagery(vector, subject, mode, stimtype="all", average=False, nest=False):
-    data_path = "/export/raid1/home/kneel027/Second-Sight/data/"
-    img_stim_file = data_path + "nsddata_stimuli/stimuli/nsd/nsdimagery_stimuli.pkl3"
-    imagery_data_path = "/export/raid1/home/tsaharoy/NSD_Imagery/everything_NSD_imagery/"
-    ex_file = open(img_stim_file, 'rb')
-    imagery_dict = pickle.load(ex_file)
-    ex_file.close()
-    exps = imagery_dict['exps']
-    cues = imagery_dict['cues']
-    image_map  = imagery_dict['image_map']
-    image_data = imagery_dict['image_data']
-    cond_idx = {
-    'visionsimple': np.arange(len(exps))[exps=='visA'],
-    'visioncomplex': np.arange(len(exps))[exps=='visB'],
-    'visionconcepts': np.arange(len(exps))[exps=='visC'],
-    'visionall': np.arange(len(exps))[np.logical_or(np.logical_or(exps=='visA', exps=='visB'), exps=='visC')],
-    'imagerysimple': np.arange(len(exps))[np.logical_or(exps=='imgA_1', exps=='imgA_2')],
-    'imagerycomplex': np.arange(len(exps))[np.logical_or(exps=='imgB_1', exps=='imgB_2')],
-    'imageryconcepts': np.arange(len(exps))[np.logical_or(exps=='imgC_1', exps=='imgC_2')],
-    'imageryall': np.arange(len(exps))[np.logical_or(
-                                        np.logical_or(
-                                            np.logical_or(exps=='imgA_1', exps=='imgA_2'), 
-                                            np.logical_or(exps=='imgB_1', exps=='imgB_2')), 
-                                        np.logical_or(exps=='imgC_1', exps=='imgC_2'))]}
-    
-    x = torch.load(f"{data_path}preprocessed_data/subject{subject}/nsd_imagery.pt").requires_grad_(False).to("cpu")
-    cond_im_idx = {n: [image_map[c] for c in cues[idx]] for n,idx in cond_idx.items()}
-    y = torch.load(f"{data_path}preprocessed_data/{vector}_18.pt").requires_grad_(False).to("cpu")
-    # Prune down to specific experimental mode/stimuli type
-    x = x[cond_idx[mode+stimtype]]
-    conditionals = cond_im_idx[mode+stimtype]
-    if stimtype == "simple":
-        y = y[:6]
-    elif stimtype == "complex":
-        y = y[6:12]
-    elif stimtype == "concepts":
-        y = y[12:]
-    
-    # trial_count = int(x.shape[0]/sample_count)
-    # Average across trials
-    if average or nest:
-        x, y, sample_count = condition_average(x, y, conditionals, nest=nest)
-    else:
-        x = x.reshape((x.shape[0], 1, x.shape[1]))
-    print(x.shape)
-    return x, y
-
-def condition_average(x, y, cond, nest=False):
-    idx, idx_count = np.unique(cond, return_counts=True)
-    idx_list = [np.array(cond)==i for i in np.sort(idx)]
-    if nest:
-        avg_x = torch.zeros((len(idx), idx_count.max(), x.shape[1]), dtype=torch.float32)
-    else:
-        avg_x = torch.zeros((len(idx), 1, x.shape[1]), dtype=torch.float32)
-    for i, m in enumerate(idx_list):
-        if nest:
-            avg_x[i] = x[m]
-        else:
-            avg_x[i] = torch.mean(x[m], axis=0)
-    if isinstance(y, list):
-        nested_y = []
-        for i, m in enumerate(idx_list):
-            indexed_y = [y[j] for j in range(len(y)) if m[j]]
-            nested_y.append(indexed_y)
-        y = nested_y
-        
-    return avg_x, y, len(idx_count)
-
 
 # %%
 parser = argparse.ArgumentParser(description="Model Training Configuration")
@@ -157,6 +87,9 @@ parser.add_argument(
 parser.add_argument(
     "--gen_rep",type=int,default=0,
 )
+parser.add_argument(
+    "--trial_reps",type=int,default=16,
+)
 if utils.is_interactive():
     args = parser.parse_args(jupyter_args)
 else:
@@ -172,7 +105,7 @@ utils.seed_everything(seed=seed)
 
 # make output directory
 os.makedirs("evals",exist_ok=True)
-os.makedirs(f"evals/{model_name}",exist_ok=True)
+os.makedirs(f"evals/{model_name}_b3",exist_ok=True)
 
 # %%
 # voxels = {}
@@ -236,7 +169,7 @@ else: # using larger test set from after full dataset released
 # assert (test_i+1) * num_test == len(test_voxels) == len(test_images_idx)
 # print(test_i, len(test_voxels), len(test_images_idx), len(np.unique(test_images_idx)))
 
-voxels, stimulus = load_nsd_mental_imagery(vector = "images", subject=subj, mode=mode, stimtype="all", average=False, nest=True)
+voxels, stimulus = utils.load_nsd_mental_imagery(subject=subj, mode=mode, trial_reps=trial_reps, stimtype="all", average=False, nest=True)
 num_voxels = voxels.shape[-1]
 
 # %%
@@ -558,7 +491,9 @@ with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.float16):
                         cond_scale = 1., timesteps = 20)
         
         pred_caption_emb = clip_convert(prior_out)
+        print(f"pred_caption_emb: {pred_caption_emb.shape}")
         generated_ids = clip_text_model.generate(pixel_values=pred_caption_emb, max_length=20)
+        print(f"generated_ids: {generated_ids.shape}")
         generated_caption = processor.batch_decode(generated_ids, skip_special_tokens=True)
         all_predcaptions = np.hstack((all_predcaptions, generated_caption))
         print(generated_caption)
@@ -609,12 +544,14 @@ if blurry_recon:
 print(all_recons.shape)
 # torch.save(all_images,"evals/all_images.pt")
 if blurry_recon:
-    torch.save(all_blurryrecons,f"evals/{model_name}/{model_name}_all_blurryrecons_{mode}_{gen_rep}.pt")
-torch.save(all_recons,f"evals/{model_name}/{model_name}_all_recons_{mode}_{gen_rep}.pt")
-torch.save(all_predcaptions,f"evals/{model_name}/{model_name}_all_predcaptions_{mode}_{gen_rep}.pt")
-torch.save(all_clipvoxels,f"evals/{model_name}/{model_name}_all_clipvoxels_{mode}_{gen_rep}.pt")
-print(f"saved {model_name} mi outputs for rep {gen_rep}!")
+    torch.save(all_blurryrecons,f"evals/{model_name}_b3/{model_name}_all_blurryrecons_{mode}_{trial_reps}_{gen_rep}.pt")
+torch.save(all_recons,f"evals/{model_name}_b3/{model_name}_all_recons_{mode}_{trial_reps}_{gen_rep}.pt")
+torch.save(all_predcaptions,f"evals/{model_name}_b3/{model_name}_all_predcaptions_{mode}_{trial_reps}_{gen_rep}.pt")
+torch.save(all_clipvoxels,f"evals/{model_name}_b3/{model_name}_all_clipvoxels_{mode}_{trial_reps}_{gen_rep}.pt")
+print(f"saved {model_name} mi outputs for trial rep {trial_reps}, gen rep {gen_rep}!")
 
+import time 
+time.sleep(10)
 if not utils.is_interactive():
     sys.exit(0)
 

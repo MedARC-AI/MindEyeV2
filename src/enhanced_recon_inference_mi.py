@@ -1,6 +1,5 @@
 # %%
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import sys
 import json
 import argparse
@@ -61,6 +60,9 @@ parser.add_argument(
 parser.add_argument(
     "--gen_rep",type=int,default=0,
 )
+parser.add_argument(
+    "--trial_reps",type=int,default=16,
+)
 if utils.is_interactive():
     args = parser.parse_args(jupyter_args)
 else:
@@ -76,13 +78,13 @@ utils.seed_everything(seed=seed)
 
 # make output directory
 os.makedirs("evals",exist_ok=True)
-os.makedirs(f"evals/{model_name}",exist_ok=True)
+os.makedirs(f"evals/{model_name}_b3",exist_ok=True)
 
 all_images = torch.load(f"evals/all_images.pt")
-all_recons = torch.load(f"evals/{model_name}/{model_name}_all_recons_{mode}_{gen_rep}.pt")
-all_clipvoxels = torch.load(f"evals/{model_name}/{model_name}_all_clipvoxels_{mode}_{gen_rep}.pt")
-all_blurryrecons = torch.load(f"evals/{model_name}/{model_name}_all_blurryrecons_{mode}_{gen_rep}.pt")
-all_predcaptions = torch.load(f"evals/{model_name}/{model_name}_all_predcaptions_{mode}_{gen_rep}.pt")
+all_recons = torch.load(f"evals/{model_name}_b3/{model_name}_all_recons_{mode}_{trial_reps}_{gen_rep}.pt")
+all_clipvoxels = torch.load(f"evals/{model_name}_b3/{model_name}_all_clipvoxels_{mode}_{trial_reps}_{gen_rep}.pt")
+all_blurryrecons = torch.load(f"evals/{model_name}_b3/{model_name}_all_blurryrecons_{mode}_{trial_reps}_{gen_rep}.pt")
+all_predcaptions = torch.load(f"evals/{model_name}_b3/{model_name}_all_predcaptions_{mode}_{trial_reps}_{gen_rep}.pt")
 
 all_recons = transforms.Resize((768,768))(all_recons).float()
 all_blurryrecons = transforms.Resize((768,768))(all_blurryrecons).float()
@@ -259,8 +261,8 @@ for img_idx in tqdm(range(len(all_recons))):
         else:
             all_enhancedrecons = torch.vstack((all_enhancedrecons, samples))
             
-rec_path = f"/home/naxos2-raid25/kneel027/home/kneel027/Second-Sight/output/mental_imagery_paper/{mode}/mindeye2/subject{subj}/"
-gt_path = f"/home/naxos2-raid25/kneel027/home/kneel027/Second-Sight/output/mental_imagery_paper/{mode}/braindiffuser/subject{subj}/"
+rec_path = f"/home/naxos2-raid25/kneel027/home/kneel027/Second-Sight/output/mental_imagery_paper_b3/{mode}/mindeye2_{trial_reps}_trial_reps/subject{subj}/"
+gt_path = f"/home/naxos2-raid25/kneel027/home/kneel027/Second-Sight/data/nsddata_stimuli/stimuli/imagery_images/"
 for i in range(18):
     os.makedirs(f"{rec_path}{i}/",exist_ok=True)
     pil_rec = transforms.ToPILImage()(all_enhancedrecons[i])
@@ -272,7 +274,7 @@ for i in range(18):
     pil_rec_unrefined = transforms.ToPILImage()(all_recons[i])
     pil_rec_unrefined.save(f"{rec_path}{i}/{gen_rep}_unrefined.png")
     
-    gt = PIL.Image.open(f"{gt_path}{i}/ground_truth.png")
+    gt = PIL.Image.open(f"{gt_path}{i}.png")
     gt.save(f"{rec_path}{i}/ground_truth.png")
     
     decoded_caption = all_predcaptions[[i]][0]
@@ -281,6 +283,8 @@ for i in range(18):
 
 all_enhancedrecons = transforms.Resize((256,256))(all_enhancedrecons).float()
 print("all_enhancedrecons", all_enhancedrecons.shape)
-torch.save(all_enhancedrecons,f"evals/{model_name}/{model_name}_all_enhancedrecons_{mode}_{gen_rep}.pt")
-print(f"saved evals/{model_name}/{model_name}_all_enhancedrecons_{mode}_{gen_rep}.pt")
+torch.save(all_enhancedrecons,f"evals/{model_name}_b3/{model_name}_all_enhancedrecons_{mode}_{trial_reps}_{gen_rep}.pt")
+print(f"saved evals/{model_name}_b3/{model_name}_all_enhancedrecons_{mode}_{trial_reps}_{gen_rep}.pt")
 
+import time 
+time.sleep(10)
