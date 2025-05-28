@@ -1,10 +1,6 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[1]:
-
-
+# %%
 import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import sys
 import json
 import pickle
@@ -24,7 +20,7 @@ import torch
 import torch.nn as nn
 from torchvision import transforms
 from accelerate import Accelerator
-
+from random import randrange
 # SDXL unCLIP requires code from https://github.com/Stability-AI/generative-models/tree/main
 sys.path.append('generative_models/')
 import sgm
@@ -52,43 +48,18 @@ accelerator = Accelerator(split_batches=False, mixed_precision="fp16")
 device = accelerator.device
 print("device:",device)
 
-
-# In[2]:
-
-
-def condition_average(x, y, cond, nest=False):
-    idx, idx_count = np.unique(cond, return_counts=True)
-    idx_list = [np.array(cond)==i for i in np.sort(idx)]
-    if nest:
-        avg_x = torch.zeros((len(idx), idx_count.max(), x.shape[1]), dtype=torch.float32)
-    else:
-        avg_x = torch.zeros((len(idx), 1, x.shape[1]), dtype=torch.float32)
-    for i, m in enumerate(idx_list):
-        if nest:
-            avg_x[i] = x[m]
-        else:
-            avg_x[i] = torch.mean(x[m], axis=0)
-        
-    return avg_x, y, len(idx_count)
-
-#subject: nsd subject index between 1-8
-#mode: vision, imagery
-#stimtype: all, simple, complex, concepts
-#average: whether to average across trials, will produce x that is (stimuli, 1, voxels)
-#nest: whether to nest the data according to stimuli, will produce x that is (stimuli, trials, voxels)
-def load_nsd_mental_imagery(subject, mode, stimtype="all", average=False, nest=False):
-    # This file has a bunch of information about the stimuli and cue associations that will make loading it easier
-    img_stim_file = "data/nsddata_stimuli/stimuli/nsdimagery_stimuli.pkl3"
+# %%
+def load_nsd_mental_imagery(vector, subject, mode, stimtype="all", average=False, nest=False):
+    data_path = "/export/raid1/home/kneel027/Second-Sight/data/"
+    img_stim_file = data_path + "nsddata_stimuli/stimuli/nsd/nsdimagery_stimuli.pkl3"
+    imagery_data_path = "/export/raid1/home/tsaharoy/NSD_Imagery/everything_NSD_imagery/"
     ex_file = open(img_stim_file, 'rb')
     imagery_dict = pickle.load(ex_file)
     ex_file.close()
-    # Indicates what experiments trials belong to
     exps = imagery_dict['exps']
-    # Indicates the cues for different stimuli
     cues = imagery_dict['cues']
-    # Maps the cues to the stimulus image information
     image_map  = imagery_dict['image_map']
-    # Organize the indices of the trials according to the modality and the type of stimuli
+    image_data = imagery_dict['image_data']
     cond_idx = {
     'visionsimple': np.arange(len(exps))[exps=='visA'],
     'visioncomplex': np.arange(len(exps))[exps=='visB'],
@@ -102,16 +73,13 @@ def load_nsd_mental_imagery(subject, mode, stimtype="all", average=False, nest=F
                                             np.logical_or(exps=='imgA_1', exps=='imgA_2'), 
                                             np.logical_or(exps=='imgB_1', exps=='imgB_2')), 
                                         np.logical_or(exps=='imgC_1', exps=='imgC_2'))]}
-    # Load normalized betas
-    x = torch.load("data/preprocessed_data/subject{}/nsd_imagery.pt".format(subject)).requires_grad_(False).to("cpu")
-    # Find the trial indices conditioned on the type of trials we want to load
+    
+    x = torch.load(f"{data_path}preprocessed_data/subject{subject}/nsd_imagery.pt").requires_grad_(False).to("cpu")
     cond_im_idx = {n: [image_map[c] for c in cues[idx]] for n,idx in cond_idx.items()}
-    conditionals = cond_im_idx[mode+stimtype]
-    # Stimuli file is of shape (18,3,425,425), these can be converted back into PIL images using transforms.ToPILImage()
-    y = torch.load("data/nsddata_stimuli/stimuli/imagery_stimuli_18.pt").requires_grad_(False).to("cpu")
-    # Prune the beta file down to specific experimental mode/stimuli type
+    y = torch.load(f"{data_path}preprocessed_data/{vector}_18.pt").requires_grad_(False).to("cpu")
+    # Prune down to specific experimental mode/stimuli type
     x = x[cond_idx[mode+stimtype]]
-    # If stimtype is not all, then prune the image data down to the specific stimuli type
+    conditionals = cond_im_idx[mode+stimtype]
     if stimtype == "simple":
         y = y[:6]
     elif stimtype == "complex":
@@ -119,41 +87,38 @@ def load_nsd_mental_imagery(subject, mode, stimtype="all", average=False, nest=F
     elif stimtype == "concepts":
         y = y[12:]
     
-    # Average or nest the betas across trials
+    # trial_count = int(x.shape[0]/sample_count)
+    # Average across trials
     if average or nest:
         x, y, sample_count = condition_average(x, y, conditionals, nest=nest)
     else:
         x = x.reshape((x.shape[0], 1, x.shape[1]))
-    
     print(x.shape)
     return x, y
 
-
-# In[3]:
-
-
-# if running this interactively, can specify jupyter_args here for argparser to use
-if utils.is_interactive():
-    model_name = "final_subj07_pretrained_40sess_24bs"
-    print("model_name:", model_name)
-
-    # other variables can be specified in the following string:
-    jupyter_args = f"--data_path=../dataset \
-                    --cache_dir=../cache \
-                    --model_name={model_name} --subj=7 \
-                    --hidden_dim=4096 --n_blocks=4 --new_test --mode vision"
-    print(jupyter_args)
-    jupyter_args = jupyter_args.split()
-    
-    from IPython.display import clear_output # function to clear print outputs in cell
-    get_ipython().run_line_magic('load_ext', 'autoreload')
-    # this allows you to change functions in models.py or utils.py and have this notebook automatically update with your revisions
-    get_ipython().run_line_magic('autoreload', '2')
-
-
-# In[4]:
+def condition_average(x, y, cond, nest=False):
+    idx, idx_count = np.unique(cond, return_counts=True)
+    idx_list = [np.array(cond)==i for i in np.sort(idx)]
+    if nest:
+        avg_x = torch.zeros((len(idx), idx_count.max(), x.shape[1]), dtype=torch.float32)
+    else:
+        avg_x = torch.zeros((len(idx), 1, x.shape[1]), dtype=torch.float32)
+    for i, m in enumerate(idx_list):
+        if nest:
+            avg_x[i] = x[m]
+        else:
+            avg_x[i] = torch.mean(x[m], axis=0)
+    if isinstance(y, list):
+        nested_y = []
+        for i, m in enumerate(idx_list):
+            indexed_y = [y[j] for j in range(len(y)) if m[j]]
+            nested_y.append(indexed_y)
+        y = nested_y
+        
+    return avg_x, y, len(idx_count)
 
 
+# %%
 parser = argparse.ArgumentParser(description="Model Training Configuration")
 parser.add_argument(
     "--model_name", type=str, default="testing",
@@ -187,13 +152,10 @@ parser.add_argument(
     "--seq_len",type=int,default=1,
 )
 parser.add_argument(
-    "--seed",type=int,default=42,
-)
-parser.add_argument(
     "--mode",type=str,default="vision",
 )
 parser.add_argument(
-    "--trial_reps",type=int,default=16,
+    "--gen_rep",type=int,default=0,
 )
 if utils.is_interactive():
     args = parser.parse_args(jupyter_args)
@@ -205,16 +167,14 @@ for attribute_name in vars(args).keys():
     globals()[attribute_name] = getattr(args, attribute_name)
     
 # seed all random functions
-utils.seed_everything(seed)
+seed=randrange(10000)
+utils.seed_everything(seed=seed)
 
 # make output directory
 os.makedirs("evals",exist_ok=True)
-os.makedirs(f"evals/{model_name}_b3",exist_ok=True)
+os.makedirs(f"evals/{model_name}",exist_ok=True)
 
-
-# In[5]:
-
-
+# %%
 # voxels = {}
 # # Load hdf5 data for betas
 # f = h5py.File(f'{data_path}/betas_all_subj0{subj}_fp32_renorm.hdf5', 'r')
@@ -258,10 +218,7 @@ else: # using larger test set from after full dataset released
 # test_dl = torch.utils.data.DataLoader(test_data, batch_size=num_test, shuffle=False, drop_last=True, pin_memory=True)
 # print(f"Loaded test dl for subj{subj}!\n")
 
-
-# In[6]:
-
-
+# %%
 # # Prep images but don't load them all to memory
 # f = h5py.File(f'{data_path}/coco_images_224_float16.hdf5', 'r')
 # images = f['images']
@@ -282,10 +239,7 @@ else: # using larger test set from after full dataset released
 voxels, stimulus = load_nsd_mental_imagery(vector = "images", subject=subj, mode=mode, stimtype="all", average=False, nest=True)
 num_voxels = voxels.shape[-1]
 
-
-# In[7]:
-
-
+# %%
 clip_img_embedder = FrozenOpenCLIPImageEmbedder(
     arch="ViT-bigG-14",
     version="laion2b_s39b_b160k",
@@ -491,10 +445,7 @@ except: # probably ckpt is saved using deepspeed format
     del state_dict
 print("ckpt loaded!")
 
-
-# In[8]:
-
-
+# %%
 # setup text caption networks
 from transformers import AutoProcessor, AutoModelForCausalLM
 from modeling_git import GitForCausalLMClipEmb
@@ -522,10 +473,7 @@ clip_convert.load_state_dict(state_dict, strict=True)
 clip_convert.to(device) # if you get OOM running this script, you can switch this to cpu and lower minibatch_size to 4
 del state_dict
 
-
-# In[9]:
-
-
+# %%
 # prep unCLIP
 config = OmegaConf.load("generative_models/configs/unclip6.yaml")
 config = OmegaConf.to_container(config, resolve=True)
@@ -564,10 +512,7 @@ out = diffusion_engine.conditioner(batch)
 vector_suffix = out["vector"].to(device)
 print("vector_suffix", vector_suffix.shape)
 
-
-# In[10]:
-
-
+# %%
 # get all reconstructions
 model.to(device)
 model.eval().requires_grad_(False)
@@ -613,11 +558,10 @@ with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.float16):
                         cond_scale = 1., timesteps = 20)
         
         pred_caption_emb = clip_convert(prior_out)
-        print(f"pred_caption_emb: {pred_caption_emb.shape}")
         generated_ids = clip_text_model.generate(pixel_values=pred_caption_emb, max_length=20)
-        print(f"generated_ids: {generated_ids.shape}")
         generated_caption = processor.batch_decode(generated_ids, skip_special_tokens=True)
         all_predcaptions = np.hstack((all_predcaptions, generated_caption))
+        print(generated_caption)
         
         # Feed diffusion prior outputs through unCLIP
 
@@ -671,8 +615,7 @@ torch.save(all_predcaptions,f"evals/{model_name}/{model_name}_all_predcaptions_{
 torch.save(all_clipvoxels,f"evals/{model_name}/{model_name}_all_clipvoxels_{mode}_{gen_rep}.pt")
 print(f"saved {model_name} mi outputs for rep {gen_rep}!")
 
-import time 
-time.sleep(10)
 if not utils.is_interactive():
     sys.exit(0)
+
 
