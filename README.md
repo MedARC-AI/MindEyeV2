@@ -4,6 +4,15 @@
 
 ![](figs/recon_comparison_small_alt.png)<br>
 
+## Retrieval metric correction
+
+The original evaluation code transposed the cosine similarity matrix, swapping image retrieval (brain query, image candidates) and brain retrieval (image query, brain candidates). This is now corrected for evaluation, training logs, and retrieval visualizations. The paper's MindEye2 retrieval labels should be exchanged; the corrected interpretation of the published scores is:
+
+| Training data | Image retrieval (brain → image) | Brain retrieval (image → brain) |
+| --- | --- | --- |
+| 1 hour | 57.4% | 79.0% |
+| 40 hours | 98.3% | 98.8% |
+
 ## Installation
 
 1. Agree to the Natural Scenes Dataset's [Terms and Conditions](https://cvnlab.slite.page/p/IB6BSeW_7o/Terms-and-Conditions) and fill out the [NSD Data Access form](https://forms.gle/xue2bCdM9LaFNMeb7)

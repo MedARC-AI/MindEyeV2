@@ -84,7 +84,7 @@ def batchwise_cosine_similarity(Z,B):
     B = B.flatten(1).T
     Z_norm = torch.linalg.norm(Z, dim=1, keepdim=True)  # Size (n, 1).
     B_norm = torch.linalg.norm(B, dim=0, keepdim=True)  # Size (1, b).
-    cosine_similarity = ((Z @ B) / (Z_norm @ B_norm)).T
+    cosine_similarity = (Z @ B) / (Z_norm @ B_norm)
     return cosine_similarity
 
 def prenormed_batchwise_cosine_similarity(Z,B):
